@@ -229,6 +229,7 @@ class FirebaseAuthService(
                 shopId = FirebaseManager.DEFAULT_SHOP_ID,
                 photoUrl = "",
                 phone = trimmedPhone,
+                isActive = true,
                 createdAt = now,
                 updatedAt = now
             )
@@ -274,6 +275,7 @@ class FirebaseAuthService(
                 shopId = FirebaseManager.DEFAULT_SHOP_ID,
                 photoUrl = user.photoUrl?.toString() ?: "",
                 phone = user.phoneNumber ?: "+91 98765 43210",
+                isActive = true,
                 createdAt = now,
                 updatedAt = now
             )
@@ -419,6 +421,7 @@ class FirebaseAuthService(
             shopId = FirebaseManager.DEFAULT_SHOP_ID,
             photoUrl = user.photoUrl?.toString() ?: "",
             phone = user.phoneNumber ?: "+91 98765 43210",
+            isActive = true,
             createdAt = now,
             updatedAt = now
         )

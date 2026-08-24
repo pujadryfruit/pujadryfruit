@@ -48,11 +48,11 @@ service cloud.firestore {
 
     // 4. Shop Authorization Check
     // A user is an authorized staff/admin member if:
-    // - Their server-side /users/{uid} document has active status AND shopId == "puja_dryfruits_main"
+    // - Their server-side /users/{uid} document has active status (or default true) AND shopId == "puja_dryfruits_main"
     // - OR their email is listed in /authorized_users table provisioned by Owner
     function isShopStaff() {
       return signedIn() && (
-        (hasUserDoc() && getUserDoc().shopId == "puja_dryfruits_main" && getUserDoc().isActive == true) ||
+        (hasUserDoc() && getUserDoc().shopId == "puja_dryfruits_main" && (!('isActive' in getUserDoc()) || getUserDoc().isActive == true)) ||
         isPreAuthorizedEmail()
       );
     }
@@ -90,12 +90,11 @@ service cloud.firestore {
       // User can read their own profile; Owner/Admin can view all shop staff profiles
       allow read: if signedIn() && (request.auth.uid == userId || isShopOwnerOrAdmin());
 
-      // Profile creation on first login is allowed ONLY if the email is pre-authorized by Owner,
-      // and non-owners cannot set their own role to OWNER/ADMIN.
-      allow create: if signedIn() && request.auth.uid == userId && (
-        isShopOwnerOrAdmin() ||
-        (isPreAuthorizedEmail() && request.resource.data.role == get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role)
-      ) && request.resource.data.shopId == "puja_dryfruits_main";
+      // Profile creation:
+      // - Authenticated user can create their own initial profile document for puja_dryfruits_main shop
+      // - Staff created by Owner/Admin can be created
+      allow create: if signedIn() && request.auth.uid == userId &&
+        request.resource.data.shopId == "puja_dryfruits_main";
 
       // Profile updates:
       // - Regular staff can update their own personal info (name, phone, photo) but CANNOT change role, shopId, or isActive
