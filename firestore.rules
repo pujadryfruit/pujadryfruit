@@ -1,0 +1,134 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for security and multi-tenancy
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserId() {
+      return request.auth.uid;
+    }
+
+    // Check if user is a member of the shop
+    function isShopMember(shopId) {
+      return isAuthenticated() && (
+        request.auth.token.shopId == shopId ||
+        exists(/databases/$(database)/documents/shops/$(shopId)/members/$(getUserId())) ||
+        get(/databases/$(database)/documents/users/$(getUserId())).data.shopId == shopId
+      );
+    }
+
+    // Check if user is the shop owner or admin
+    function isShopOwner(shopId) {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/shops/$(shopId)).data.ownerUserId == getUserId() ||
+        request.auth.token.role == 'OWNER'
+      );
+    }
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || resource.data.shopId == request.auth.token.shopId);
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isShopOwner(resource.data.shopId));
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // 2. Shops Collection
+    match /shops/{shopId} {
+      allow read: if isAuthenticated() && (resource.data.ownerUserId == getUserId() || isShopMember(shopId));
+      allow create: if isAuthenticated() && request.resource.data.ownerUserId == getUserId();
+      allow update: if isAuthenticated() && isShopOwner(shopId);
+      allow delete: if isAuthenticated() && isShopOwner(shopId);
+
+      // Subcollections under shop
+      match /members/{memberId} {
+        allow read: if isShopMember(shopId);
+        allow write: if isShopOwner(shopId);
+      }
+    }
+
+    // 3. Products Collection
+    match /products/{productId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+      allow update: if isAuthenticated() && isShopMember(resource.data.shopId) && isShopMember(request.resource.data.shopId);
+      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    }
+
+    // 4. Categories Collection
+    match /categories/{categoryId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 5. Suppliers Collection
+    match /suppliers/{supplierId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 6. Customers Collection
+    match /customers/{customerId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 7. Sales Collection
+    match /sales/{saleId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    }
+
+    // 8. Sale Items Collection
+    match /saleItems/{itemId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 9. Purchases Collection
+    match /purchases/{purchaseId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    }
+
+    // 10. Purchase Items Collection
+    match /purchaseItems/{itemId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 11. Payments Collection (Udhaar & Supplier Settlements)
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    }
+
+    // 12. Expenses Collection
+    match /expenses/{expenseId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+
+    // 13. Stock Transactions Collection (Audit Log)
+    match /stockTransactions/{transactionId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+      allow update, delete: if false; // Immutable audit log
+    }
+
+    // 14. Invoices Collection
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
+      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    }
+  }
+}

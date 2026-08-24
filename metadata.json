@@ -1,0 +1,6 @@
+{
+  "name": "Puja Dry Fruits",
+  "description": "A comprehensive dry fruit shop management system for inventory, billing, sales invoices, purchases, customer credit/udhaar, expenses, and profit analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
