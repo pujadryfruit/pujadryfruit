@@ -447,7 +447,7 @@ fun AdminProfileScreen(
                 }
             }
 
-            // Authentication & Cloud Sync Details
+            // Account & Cloud Backup Details
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
@@ -460,24 +460,17 @@ fun AdminProfileScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        text = "Firebase Cloud & Session Info",
+                        text = "Account & Store Info",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    // Project ID
+                    // Email
                     ProfileInfoRow(
-                        icon = Icons.Default.CloudQueue,
-                        label = "Firebase Project",
-                        value = "puja-dryfruits (748428498825)"
-                    )
-
-                    // User UID
-                    ProfileInfoRow(
-                        icon = Icons.Default.Fingerprint,
-                        label = "User UID",
-                        value = currentUserDoc?.id?.ifEmpty { "user_puja_owner" } ?: "user_puja_owner"
+                        icon = Icons.Default.Email,
+                        label = "Login Email",
+                        value = currentUserDoc?.email ?: "info@pujadryfruits.com"
                     )
 
                     // Phone
@@ -490,12 +483,12 @@ fun AdminProfileScreen(
                     // Sync Status
                     ProfileInfoRow(
                         icon = if (syncState == CloudSyncState.SUCCESS) Icons.Default.CloudDone else Icons.Default.CloudSync,
-                        label = "Cloud Sync State",
+                        label = "Cloud Backup Status",
                         value = when (syncState) {
-                            CloudSyncState.SYNCING -> "Syncing with Firestore..."
-                            CloudSyncState.SUCCESS -> "Active • Synced ($formattedSyncTime)"
-                            CloudSyncState.ERROR -> "Sync Warning • Local Active"
-                            CloudSyncState.OFFLINE -> "Offline Mode • Local Persistence"
+                            CloudSyncState.SYNCING -> "Syncing data in background..."
+                            CloudSyncState.SUCCESS -> "Up to date • Synced ($formattedSyncTime)"
+                            CloudSyncState.ERROR -> "Offline Mode • Saved locally"
+                            CloudSyncState.OFFLINE -> "Offline Mode • Saved locally"
                             CloudSyncState.IDLE -> "Cloud Ready • ($formattedSyncTime)"
                         },
                         valueColor = if (syncState == CloudSyncState.SUCCESS) SuccessGreen else MaterialTheme.colorScheme.onSurface
@@ -592,7 +585,7 @@ fun AdminProfileScreen(
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            text = "Update your Firebase login password",
+                            text = "Update your account login password",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline
                         )
@@ -630,12 +623,12 @@ fun AdminProfileScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Sync Cloud Firestore Data",
+                            text = "Sync & Backup Store Data",
                             fontWeight = FontWeight.SemiBold,
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            text = "Push local records and fetch cloud updates",
+                            text = "Keep bills, stock and customer ledger updated",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline
                         )

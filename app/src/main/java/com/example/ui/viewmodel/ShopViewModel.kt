@@ -482,8 +482,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     // --- Product & Inventory Operations ---
     fun addProduct(product: ProductEntity) {
         viewModelScope.launch {
-            productRepo.addProduct(product)
+            val id = productRepo.addProduct(product)
+            val productWithId = if (product.id == 0L) product.copy(id = id) else product
             _uiEventMessage.emit("Added ${product.name} to inventory")
+            launch {
+                syncRepo.syncProductToCloud(productWithId)
+            }
         }
     }
 
@@ -491,20 +495,42 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             productRepo.updateProduct(product)
             _uiEventMessage.emit("Updated ${product.name}")
+            launch {
+                syncRepo.syncProductToCloud(product)
+            }
         }
     }
 
     fun deleteProduct(productId: Long) {
         viewModelScope.launch {
+            val product = productRepo.getProductById(productId)
             productRepo.deleteProduct(productId)
             _uiEventMessage.emit("Product archived from active catalog")
+            if (product != null) {
+                launch {
+                    syncRepo.deleteProductFromCloud(product)
+                }
+            }
         }
     }
 
     fun adjustStock(productId: Long, diff: Double, reason: String) {
         viewModelScope.launch {
+            val product = productRepo.getProductById(productId)
             productRepo.adjustStock(productId, diff, reason)
             _uiEventMessage.emit("Stock adjusted successfully")
+            if (product != null) {
+                val newStock = product.currentStock + diff
+                launch {
+                    syncRepo.syncStockAdjustmentToCloud(
+                        productId = productId,
+                        productName = product.name,
+                        diff = diff,
+                        newStock = newStock,
+                        reason = reason
+                    )
+                }
+            }
         }
     }
 
@@ -543,12 +569,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 paymentMethod = paymentMethod,
                 notes = notes
             )
-            purchaseRepo.createPurchase(purchase, purchaseItems)
+            val purchaseId = purchaseRepo.createPurchase(purchase, purchaseItems)
             _uiEventMessage.emit("Stock inward of ${items.size} products recorded!")
 
             // Sync purchase to Firebase Firestore atomically in background
             launch {
-                syncRepo.syncPurchaseToCloud(purchase, purchaseItems)
+                syncRepo.syncPurchaseToCloud(purchase.copy(id = purchaseId), purchaseItems)
             }
         }
     }
@@ -561,8 +587,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 mobile = mobile.trim(),
                 address = address.trim()
             )
-            customerRepo.addCustomer(customer)
+            val id = customerRepo.addCustomer(customer)
+            val custWithId = if (customer.id == 0L) customer.copy(id = id) else customer
             _uiEventMessage.emit("Customer $name registered")
+            launch {
+                syncRepo.syncCustomerToCloud(custWithId)
+            }
         }
     }
 
@@ -575,6 +605,9 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             customerRepo.recordCreditRepayment(customerId, amount, paymentMethod, notes)
             _uiEventMessage.emit("Received payment of ₹$amount from customer")
+            launch {
+                syncRepo.syncPaymentToCloud(customerId, amount, paymentMethod, notes)
+            }
         }
     }
 
@@ -596,8 +629,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 paymentMethod = paymentMethod,
                 notes = notes.trim()
             )
-            expenseRepo.addExpense(expense)
+            val id = expenseRepo.addExpense(expense)
+            val expWithId = if (expense.id == 0L) expense.copy(id = id) else expense
             _uiEventMessage.emit("Expense of ₹$amount recorded")
+            launch {
+                syncRepo.syncExpenseToCloud(expWithId)
+            }
         }
     }
 
@@ -605,6 +642,9 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             expenseRepo.deleteExpense(id)
             _uiEventMessage.emit("Expense deleted")
+            launch {
+                syncRepo.deleteExpenseFromCloud(id)
+            }
         }
     }
 
@@ -737,19 +777,19 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     fun triggerFullCloudSync() {
         viewModelScope.launch {
-            _uiEventMessage.emit("Starting Firebase Cloud Sync...")
+            _uiEventMessage.emit("Syncing store data...")
             val result = syncRepo.performFullCloudSync()
             if (result.isSuccess) {
-                _uiEventMessage.emit("Cloud Firestore Sync complete!")
+                _uiEventMessage.emit("Data backup & sync complete!")
             } else {
-                _uiEventMessage.emit("Sync failed: ${result.exceptionOrNull()?.localizedMessage}")
+                _uiEventMessage.emit("Saved locally. Will sync when online.")
             }
         }
     }
 
     fun uploadProductImage(productId: Long, bitmap: Bitmap, onComplete: (String) -> Unit) {
         viewModelScope.launch {
-            _uiEventMessage.emit("Uploading image to Firebase Storage...")
+            _uiEventMessage.emit("Uploading image...")
             val result = storageService.uploadProductImage(
                 shopId = FirebaseManager.currentShopId,
                 productId = "${FirebaseManager.currentShopId}_prod_$productId",
@@ -757,10 +797,10 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (result.isSuccess) {
                 val url = result.getOrNull() ?: ""
-                _uiEventMessage.emit("Image uploaded to Firebase Storage")
+                _uiEventMessage.emit("Image saved successfully")
                 onComplete(url)
             } else {
-                _uiEventMessage.emit("Upload failed: ${result.exceptionOrNull()?.localizedMessage}")
+                _uiEventMessage.emit("Image upload failed: ${result.exceptionOrNull()?.localizedMessage}")
             }
         }
     }

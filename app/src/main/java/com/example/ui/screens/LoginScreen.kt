@@ -257,7 +257,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = if (isSignUpMode) "Create an Owner/Admin Account" else "Sign in with Firebase to access your shop",
+                text = if (isSignUpMode) "Create an Owner / Admin Account" else "Sign in to access Puja Dry Fruits",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.outline,
                 textAlign = TextAlign.Center
@@ -572,7 +572,7 @@ fun LoginScreen(
 
             // Cloud Status Footnote
             Text(
-                text = "Secure Firebase Authentication • Puja Dry Fruits",
+                text = "Puja Dry Fruits • Wholesale & Counter Billing",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center

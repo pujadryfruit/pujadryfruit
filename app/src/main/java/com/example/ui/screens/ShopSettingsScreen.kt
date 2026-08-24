@@ -127,85 +127,9 @@ fun ShopSettingsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Firebase Cloud Backend & Synchronization
+            // Store Account & Cloud Synchronization
             item {
                 val context = androidx.compose.ui.platform.LocalContext.current
-                var showEmailAuthDialog by remember { mutableStateOf(false) }
-                var isSignUpMode by remember { mutableStateOf(false) }
-                var authEmail by remember { mutableStateOf("pujadryfruit@gmail.com") }
-                var authPassword by remember { mutableStateOf("") }
-                var authDisplayName by remember { mutableStateOf("Puja Kumari") }
-
-                if (showEmailAuthDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showEmailAuthDialog = false },
-                        title = {
-                            Text(
-                                if (isSignUpMode) "Create Firebase Account" else "Sign In to Firebase",
-                                fontWeight = FontWeight.Bold
-                            )
-                        },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text(
-                                    text = "Firebase Project: puja-dryfruits\nPackage: com.puja.dryfruit",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.outline
-                                )
-                                if (isSignUpMode) {
-                                    OutlinedTextField(
-                                        value = authDisplayName,
-                                        onValueChange = { authDisplayName = it },
-                                        label = { Text("Full Name") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = authEmail,
-                                    onValueChange = { authEmail = it },
-                                    label = { Text("Email Address") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = authPassword,
-                                    onValueChange = { authPassword = it },
-                                    label = { Text("Password") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                TextButton(
-                                    onClick = { isSignUpMode = !isSignUpMode },
-                                    modifier = Modifier.align(Alignment.End)
-                                ) {
-                                    Text(if (isSignUpMode) "Already have an account? Sign In" else "New user? Create Account")
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    showEmailAuthDialog = false
-                                    if (isSignUpMode) {
-                                        viewModel.signUpWithEmail(authEmail, authPassword, authDisplayName)
-                                    } else {
-                                        viewModel.signInWithEmail(authEmail, authPassword)
-                                    }
-                                }
-                            ) {
-                                Text(if (isSignUpMode) "Register" else "Sign In")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showEmailAuthDialog = false }) {
-                                Text("Cancel")
-                            }
-                        }
-                    )
-                }
 
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -224,13 +148,13 @@ fun ShopSettingsScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Icon(
-                                    Icons.Default.CloudSync,
+                                    Icons.Default.CloudDone,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Text(
-                                    text = "Firebase Cloud & Auth",
+                                    text = "Account & Cloud Backup",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -383,67 +307,30 @@ fun ShopSettingsScreen(
                             )
                         }
 
-                        // Project & Schema Info
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "Firebase Project: puja-dryfruits (748428498825)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "Package: com.puja.dryfruit • Bucket: puja-dryfruits.firebasestorage.app",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 10.5.sp
-                                )
-                            }
-                        }
-
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    text = "Status: $syncMessage",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "Tenant: ${com.example.data.firebase.FirebaseManager.DEFAULT_SHOP_ID}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.outline
-                                )
-                            }
+                            Text(
+                                text = if (syncState == com.example.data.firebase.CloudSyncState.SUCCESS) "Cloud backup is active" else "Cloud sync ready",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
 
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(
-                                    onClick = { viewModel.signOut(context) },
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text("Sign Out", fontSize = 12.sp)
+                            FilledTonalButton(
+                                onClick = { viewModel.triggerFullCloudSync() },
+                                shape = RoundedCornerShape(12.dp),
+                                enabled = syncState != com.example.data.firebase.CloudSyncState.SYNCING
+                            ) {
+                                if (syncState == com.example.data.firebase.CloudSyncState.SYNCING) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else {
+                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
                                 }
-
-                                FilledTonalButton(
-                                    onClick = { viewModel.triggerFullCloudSync() },
-                                    shape = RoundedCornerShape(12.dp),
-                                    enabled = syncState != com.example.data.firebase.CloudSyncState.SYNCING
-                                ) {
-                                    if (syncState == com.example.data.firebase.CloudSyncState.SYNCING) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                    } else {
-                                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                    }
-                                    Text("Sync")
-                                }
+                                Text("Sync Now")
                             }
                         }
                     }

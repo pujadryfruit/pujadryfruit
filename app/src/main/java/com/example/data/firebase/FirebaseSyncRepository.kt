@@ -40,9 +40,10 @@ class FirebaseSyncRepository(
 
     private var productListener: ListenerRegistration? = null
     private var customerListener: ListenerRegistration? = null
+    private var expenseListener: ListenerRegistration? = null
 
     /**
-     * Initializes real-time listener for products & customers from Firestore to local Room.
+     * Initializes real-time listener for products, customers & expenses from Firestore to local Room.
      * Uses efficient snapshot listeners restricted by shopId.
      */
     fun startRealtimeListeners(shopId: String = FirebaseManager.currentShopId) {
@@ -76,6 +77,18 @@ class FirebaseSyncRepository(
                         Log.d(TAG, "Real-time customer updates received: ${snapshot.size()} docs")
                     }
                 }
+
+            expenseListener = firestore.collection("expenses")
+                .whereEqualTo("shopId", shopId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Expense listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        Log.d(TAG, "Real-time expense updates received: ${snapshot.size()} docs")
+                    }
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Error starting real-time listeners: ${e.message}", e)
         }
@@ -86,6 +99,8 @@ class FirebaseSyncRepository(
         productListener = null
         customerListener?.remove()
         customerListener = null
+        expenseListener?.remove()
+        expenseListener = null
     }
 
     /**
@@ -237,6 +252,212 @@ class FirebaseSyncRepository(
             _syncState.value = CloudSyncState.ERROR
             _syncMessage.value = "Sync Error: ${e.localizedMessage}"
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Saves or updates a single Product in Firestore directly
+     */
+    suspend fun syncProductToCloud(
+        product: ProductEntity,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = if (product.sku.isNotBlank()) "${shopId}_${product.sku}" else "${shopId}_prod_${product.id}"
+            val ref = firestore.collection("products").document(docId)
+            val prodDoc = ProductDoc(
+                id = docId,
+                shopId = shopId,
+                sku = product.sku,
+                name = product.name,
+                hindiName = product.hindiName,
+                category = product.category,
+                unit = product.unit,
+                purchasePrice = product.purchasePrice,
+                sellingPrice = product.sellingPrice,
+                currentStock = product.currentStock,
+                minStockLevel = product.minStockLevel,
+                supplierName = product.supplierName,
+                description = product.description,
+                colorHex = product.colorHex,
+                isArchived = product.isArchived,
+                createdAt = product.createdAt,
+                updatedAt = System.currentTimeMillis()
+            )
+            ref.set(prodDoc, SetOptions.merge()).await()
+            Log.d(TAG, "Product $docId saved directly to Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Product save to Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Archives / deletes a Product in Firestore directly
+     */
+    suspend fun deleteProductFromCloud(
+        product: ProductEntity,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = if (product.sku.isNotBlank()) "${shopId}_${product.sku}" else "${shopId}_prod_${product.id}"
+            val ref = firestore.collection("products").document(docId)
+            // Mark archived in Firestore or delete
+            ref.update(mapOf("isArchived" to true, "updatedAt" to System.currentTimeMillis())).await()
+            Log.d(TAG, "Product $docId archived in Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Product archive in Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Saves or updates a single Customer in Firestore directly
+     */
+    suspend fun syncCustomerToCloud(
+        customer: CustomerEntity,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = if (customer.mobile.isNotBlank()) "${shopId}_cust_${customer.mobile}" else "${shopId}_cust_${customer.id}"
+            val ref = firestore.collection("customers").document(docId)
+            val custDoc = CustomerDoc(
+                id = docId,
+                shopId = shopId,
+                name = customer.name,
+                mobile = customer.mobile,
+                address = customer.address,
+                totalOrders = customer.totalOrders,
+                totalSpent = customer.totalSpent,
+                totalProfitGenerated = customer.totalProfitGenerated,
+                outstandingBalance = customer.outstandingBalance,
+                lastPurchaseDate = customer.lastPurchaseDate,
+                notes = customer.notes,
+                createdAt = customer.createdAt,
+                updatedAt = System.currentTimeMillis()
+            )
+            ref.set(custDoc, SetOptions.merge()).await()
+            Log.d(TAG, "Customer $docId saved directly to Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Customer save to Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Saves or updates a single Expense in Firestore directly
+     */
+    suspend fun syncExpenseToCloud(
+        expense: ExpenseEntity,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = "${shopId}_exp_${expense.id}"
+            val ref = firestore.collection("expenses").document(docId)
+            val expDoc = ExpenseDoc(
+                id = docId,
+                shopId = shopId,
+                expenseDate = expense.expenseDate,
+                category = expense.category,
+                description = expense.description,
+                amount = expense.amount,
+                paymentMethod = expense.paymentMethod,
+                notes = expense.notes,
+                receiptRef = expense.receiptRef,
+                createdByUserId = FirebaseManager.currentUserId,
+                createdAt = expense.createdAt,
+                updatedAt = System.currentTimeMillis()
+            )
+            ref.set(expDoc, SetOptions.merge()).await()
+            Log.d(TAG, "Expense $docId saved directly to Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Expense save to Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Deletes an Expense in Firestore directly
+     */
+    suspend fun deleteExpenseFromCloud(
+        expenseId: Long,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = "${shopId}_exp_${expenseId}"
+            firestore.collection("expenses").document(docId).delete().await()
+            Log.d(TAG, "Expense $docId deleted from Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Expense delete from Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Records a payment against customer Udhaar in Firestore
+     */
+    suspend fun syncPaymentToCloud(
+        customerId: Long,
+        amount: Double,
+        paymentMethod: String,
+        notes: String,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val paymentDoc = PaymentDoc(
+            shopId = shopId,
+            referenceType = "CUSTOMER_UDHAAR",
+            customerId = "${shopId}_cust_$customerId",
+            amount = amount,
+            paymentMethod = paymentMethod,
+            notes = notes,
+            createdByUserId = FirebaseManager.currentUserId,
+            paymentDate = System.currentTimeMillis()
+        )
+        transactionManager.executePaymentTransaction(shopId, paymentDoc)
+    }
+
+    /**
+     * Records a stock audit adjustment in Firestore directly
+     */
+    suspend fun syncStockAdjustmentToCloud(
+        productId: Long,
+        productName: String,
+        diff: Double,
+        newStock: Double,
+        reason: String,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val prodDocId = "${shopId}_prod_$productId"
+            val now = System.currentTimeMillis()
+            
+            // 1. Update product stock
+            firestore.collection("products").document(prodDocId)
+                .update(mapOf("currentStock" to newStock, "updatedAt" to now)).await()
+
+            // 2. Add stock transaction audit entry
+            val stockTxRef = firestore.collection("stockTransactions").document()
+            val stockTx = StockTransactionDoc(
+                id = stockTxRef.id,
+                shopId = shopId,
+                productId = prodDocId,
+                productName = productName,
+                transactionType = "ADJUSTMENT",
+                quantityChange = diff,
+                previousStock = (newStock - diff),
+                newStock = newStock,
+                referenceId = "AUDIT_${now}",
+                referenceType = "MANUAL_AUDIT",
+                reason = reason,
+                createdByUserId = FirebaseManager.currentUserId,
+                createdAt = now,
+                updatedAt = now
+            )
+            stockTxRef.set(stockTx).await()
+            Log.d(TAG, "Stock adjustment for $prodDocId saved to Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Stock adjustment write to Firestore cached: ${e.message}")
         }
     }
 

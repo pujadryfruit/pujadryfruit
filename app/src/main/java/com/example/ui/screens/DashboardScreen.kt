@@ -113,7 +113,7 @@ fun DashboardScreen(
                         } else {
                             Icon(
                                 imageVector = Icons.Default.CloudDone,
-                                contentDescription = "Firebase Cloud Sync",
+                                contentDescription = "Cloud Backup & Sync",
                                 tint = if (syncState == com.example.data.firebase.CloudSyncState.SUCCESS) SuccessGreen else MaterialTheme.colorScheme.primary
                             )
                         }

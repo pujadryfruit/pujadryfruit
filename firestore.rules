@@ -1,134 +1,246 @@
 rules_version = '2';
+
+/**
+ * Production-Grade Internal Shop Management Security Rules
+ * Application: Puja Dry Fruits (Single Shop Internal ERP)
+ * Shop ID: puja_dryfruits_main
+ *
+ * Security Architecture & Guarantees:
+ * 1. Strict Internal Access: Only authorized staff/admin accounts provisioned by the Owner can access data.
+ * 2. No Customer-Facing Auth: Customers are purely business data records (in `/customers`), NOT Firebase users.
+ * 3. Server-Enforced Role Separation:
+ *    - Validated through trusted `/users/{uid}` and `/authorized_users/{emailKey}` documents.
+ *    - Role strings cannot be created/modified by non-owners.
+ *    - No heuristic or arbitrary regex/name-pattern matching is used.
+ * 4. Immutable Stock Audit Logs: `/stockTransactions` are append-only. Updates & deletes are rejected server-side.
+ * 5. Data Integrity: `shopId` ("puja_dryfruits_main") cannot be changed or tampered with on updates.
+ */
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions for security and multi-tenancy
-    function isAuthenticated() {
-      return request.auth != null;
+    // ---------------------------------------------------------
+    // Core Authorization Functions
+    // ---------------------------------------------------------
+
+    // 1. Basic authenticated Firebase token verification
+    function signedIn() {
+      return request.auth != null && request.auth.uid != null;
     }
 
-    function getUserId() {
-      return request.auth.uid;
+    // 2. Verified User Document Check
+    function hasUserDoc() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    // Check if user is a member of the shop
-    function isShopMember(shopId) {
-      return isAuthenticated() && (
-        request.auth.token.shopId == shopId ||
-        exists(/databases/$(database)/documents/shops/$(shopId)/members/$(getUserId())) ||
-        get(/databases/$(database)/documents/users/$(getUserId())).data.shopId == shopId
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // 3. Pre-authorized email list check (normalized key: name_gmail_com)
+    function emailKey() {
+      return request.auth.token.email != null ? request.auth.token.email.replace('\\.', '_') : '';
+    }
+
+    function isPreAuthorizedEmail() {
+      return signedIn() && emailKey() != '' && exists(/databases/$(database)/documents/authorized_users/$(emailKey()));
+    }
+
+    // 4. Shop Authorization Check
+    // A user is an authorized staff/admin member if:
+    // - Their server-side /users/{uid} document has active status AND shopId == "puja_dryfruits_main"
+    // - OR their email is listed in /authorized_users table provisioned by Owner
+    function isShopStaff() {
+      return signedIn() && (
+        (hasUserDoc() && getUserDoc().shopId == "puja_dryfruits_main" && getUserDoc().isActive == true) ||
+        isPreAuthorizedEmail()
       );
     }
 
-    // Check if user is the shop owner or admin
-    function isShopOwner(shopId) {
-      return isAuthenticated() && (
-        get(/databases/$(database)/documents/shops/$(shopId)).data.ownerUserId == getUserId() ||
-        request.auth.token.role == 'OWNER'
+    // 5. Explicit Owner / Admin Check
+    // Validated strictly from server-stored user record or explicit authorized list (No loose substring/pattern matching)
+    function isShopOwnerOrAdmin() {
+      return signedIn() && (
+        (hasUserDoc() && (getUserDoc().role == "OWNER" || getUserDoc().role == "OWNER / ADMIN" || getUserDoc().role == "ADMIN")) ||
+        (isPreAuthorizedEmail() && (
+          get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role == "OWNER" ||
+          get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role == "OWNER / ADMIN" ||
+          get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role == "ADMIN"
+        ))
       );
     }
 
-    // 1. Users Collection
+    // 6. Shop Tenant Validation
+    function isShopDoc(resData) {
+      return resData.shopId == "puja_dryfruits_main";
+    }
+
+    function isShopWrite(reqData) {
+      return reqData.shopId == "puja_dryfruits_main";
+    }
+
+    function preservesShopId(resData, reqData) {
+      return reqData.shopId == resData.shopId;
+    }
+
+    // ---------------------------------------------------------
+    // 1. User Profiles & Staff Records (`users`)
+    // ---------------------------------------------------------
     match /users/{userId} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || resource.data.shopId == request.auth.token.shopId);
-      allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update: if isAuthenticated() && (request.auth.uid == userId || isShopOwner(resource.data.shopId));
-      allow delete: if isAuthenticated() && request.auth.uid == userId;
+      // User can read their own profile; Owner/Admin can view all shop staff profiles
+      allow read: if signedIn() && (request.auth.uid == userId || isShopOwnerOrAdmin());
+
+      // Profile creation on first login is allowed ONLY if the email is pre-authorized by Owner,
+      // and non-owners cannot set their own role to OWNER/ADMIN.
+      allow create: if signedIn() && request.auth.uid == userId && (
+        isShopOwnerOrAdmin() ||
+        (isPreAuthorizedEmail() && request.resource.data.role == get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role)
+      ) && request.resource.data.shopId == "puja_dryfruits_main";
+
+      // Profile updates:
+      // - Regular staff can update their own personal info (name, phone, photo) but CANNOT change role, shopId, or isActive
+      // - Owner/Admin can update staff roles and active status
+      allow update: if signedIn() && (
+        (request.auth.uid == userId &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.shopId == resource.data.shopId &&
+          request.resource.data.isActive == resource.data.isActive) ||
+        isShopOwnerOrAdmin()
+      );
+
+      // Deletions allowed ONLY by Owner/Admin for staff accounts (cannot delete own account)
+      allow delete: if signedIn() && isShopOwnerOrAdmin() && request.auth.uid != userId;
     }
 
-    // 2. Shops Collection
+    // ---------------------------------------------------------
+    // 2. Pre-Authorized Staff Whitelist (`authorized_users`)
+    // ---------------------------------------------------------
+    match /authorized_users/{userKey} {
+      // Authenticated users can check if their email is whitelisted on sign-in
+      allow read: if signedIn();
+      // ONLY Owner/Admin can add, update, or remove authorized staff emails
+      allow write: if signedIn() && isShopOwnerOrAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 3. Shop Configuration (`shops`)
+    // ---------------------------------------------------------
     match /shops/{shopId} {
-      allow read: if isAuthenticated() && (resource.data.ownerUserId == getUserId() || isShopMember(shopId));
-      allow create: if isAuthenticated() && request.resource.data.ownerUserId == getUserId();
-      allow update: if isAuthenticated() && isShopOwner(shopId);
-      allow delete: if isAuthenticated() && isShopOwner(shopId);
-
-      // Subcollections under shop
-      match /members/{memberId} {
-        allow read: if isShopMember(shopId);
-        allow write: if isShopOwner(shopId);
-      }
+      allow read: if isShopStaff() && shopId == "puja_dryfruits_main";
+      allow create, update: if isShopOwnerOrAdmin() && shopId == "puja_dryfruits_main";
+      allow delete: if false;
     }
 
-    // 3. Products Collection
-    match /products/{productId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
-      allow update: if isAuthenticated() && isShopMember(resource.data.shopId) && isShopMember(request.resource.data.shopId);
-      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    // ---------------------------------------------------------
+    // 4. Products & Categories (Inventory Management)
+    // ---------------------------------------------------------
+    match /products/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 4. Categories Collection
-    match /categories/{categoryId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    match /categories/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 5. Suppliers Collection
-    match /suppliers/{supplierId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    // ---------------------------------------------------------
+    // 5. Customers & Payments (Khata / Udhaar & Ledger)
+    // Note: Customers are business data records, NOT Firebase auth accounts.
+    // ---------------------------------------------------------
+    match /customers/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 6. Customers Collection
-    match /customers/{customerId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    match /payments/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 7. Sales Collection
-    match /sales/{saleId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
-      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    // ---------------------------------------------------------
+    // 6. Sales, Sale Items & Invoices (Billing & POS)
+    // ---------------------------------------------------------
+    match /sales/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 8. Sale Items Collection
-    match /saleItems/{itemId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    match /saleItems/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 9. Purchases Collection
-    match /purchases/{purchaseId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
-      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    match /invoices/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 10. Purchase Items Collection
-    match /purchaseItems/{itemId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    // ---------------------------------------------------------
+    // 7. Purchases, Purchase Items & Suppliers (Stock Inward)
+    // ---------------------------------------------------------
+    match /purchases/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 11. Payments Collection (Udhaar & Supplier Settlements)
-    match /payments/{paymentId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
-      allow update: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow delete: if isAuthenticated() && isShopOwner(resource.data.shopId);
+    match /purchaseItems/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 12. Expenses Collection
-    match /expenses/{expenseId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    match /suppliers/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 13. Stock Transactions Collection (Audit Log)
-    match /stockTransactions/{transactionId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow create: if isAuthenticated() && isShopMember(request.resource.data.shopId);
-      allow update, delete: if false; // Immutable audit log
+    // ---------------------------------------------------------
+    // 8. Operating Expenses (`expenses`)
+    // ---------------------------------------------------------
+    match /expenses/{docId} {
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      allow update: if isShopStaff() && isShopDoc(resource.data) && preservesShopId(resource.data, request.resource.data);
+      allow delete: if isShopOwnerOrAdmin() && isShopDoc(resource.data);
     }
 
-    // 14. Invoices Collection
-    match /invoices/{invoiceId} {
-      allow read: if isAuthenticated() && isShopMember(resource.data.shopId);
-      allow write: if isAuthenticated() && isShopMember(request.resource.data.shopId);
+    // ---------------------------------------------------------
+    // 9. Stock Audit Transactions (`stockTransactions`) - Immutable Ledger
+    // ---------------------------------------------------------
+    match /stockTransactions/{docId} {
+      // Authorized staff can read transaction audit trail
+      allow read: if isShopStaff() && isShopDoc(resource.data);
+      // Authorized staff can append new stock movement logs
+      allow create: if isShopStaff() && isShopWrite(request.resource.data);
+      // IMMUTABLE AUDIT TRAIL: Updates and deletes are STRICTLY FORBIDDEN
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Fallback: Deny any unmapped routes or unauthenticated access
+    // ---------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
