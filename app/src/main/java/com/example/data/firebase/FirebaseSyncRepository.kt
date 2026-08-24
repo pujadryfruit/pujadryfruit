@@ -4,13 +4,16 @@ import android.util.Log
 import com.example.data.firebase.models.*
 import com.example.data.local.AppDatabase
 import com.example.data.local.entities.*
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
@@ -28,6 +31,7 @@ class FirebaseSyncRepository(
     private val transactionManager: FirestoreTransactionManager = FirestoreTransactionManager(firestoreProvider)
 ) {
     private val TAG = "FirebaseSyncRepo"
+    private val syncScope = CoroutineScope(Dispatchers.IO)
 
     private val _syncState = MutableStateFlow(CloudSyncState.IDLE)
     val syncState: StateFlow<CloudSyncState> = _syncState.asStateFlow()
@@ -55,14 +59,53 @@ class FirebaseSyncRepository(
             }
             productListener = firestore.collection("products")
                 .whereEqualTo("shopId", shopId)
-                .whereEqualTo("isArchived", false)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w(TAG, "Product listener error: ${error.message}")
                         return@addSnapshotListener
                     }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        Log.d(TAG, "Real-time product updates received: ${snapshot.size()} docs")
+                    if (snapshot != null) {
+                        syncScope.launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document.toObject(ProductDoc::class.java)
+                                val docId = change.document.id
+                                val parsedId = docId.substringAfterLast("_prod_", "").toLongOrNull()
+                                when (change.type) {
+                                    DocumentChange.Type.REMOVED -> {
+                                        if (parsedId != null && parsedId > 0) {
+                                            database.productDao().deleteProductById(parsedId)
+                                        }
+                                    }
+                                    DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        if (doc.isArchived) {
+                                            if (parsedId != null && parsedId > 0) {
+                                                database.productDao().archiveProduct(parsedId)
+                                            }
+                                        } else {
+                                            val entity = ProductEntity(
+                                                id = parsedId ?: 0L,
+                                                sku = doc.sku,
+                                                name = doc.name,
+                                                hindiName = doc.hindiName,
+                                                category = doc.category,
+                                                unit = doc.unit,
+                                                purchasePrice = doc.purchasePrice,
+                                                sellingPrice = doc.sellingPrice,
+                                                currentStock = doc.currentStock,
+                                                minStockLevel = doc.minStockLevel,
+                                                supplierName = doc.supplierName,
+                                                description = doc.description,
+                                                colorHex = doc.colorHex,
+                                                isArchived = doc.isArchived,
+                                                createdAt = doc.createdAt,
+                                                updatedAt = doc.updatedAt
+                                            )
+                                            database.productDao().insertProduct(entity)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -73,8 +116,40 @@ class FirebaseSyncRepository(
                         Log.w(TAG, "Customer listener error: ${error.message}")
                         return@addSnapshotListener
                     }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        Log.d(TAG, "Real-time customer updates received: ${snapshot.size()} docs")
+                    if (snapshot != null) {
+                        syncScope.launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document.toObject(CustomerDoc::class.java)
+                                val docId = change.document.id
+                                val parsedId = docId.substringAfterLast("_cust_", "").toLongOrNull()
+                                when (change.type) {
+                                    DocumentChange.Type.REMOVED -> {
+                                        if (parsedId != null && parsedId > 0) {
+                                            database.customerDao().deleteCustomerById(parsedId)
+                                        } else if (doc.mobile.isNotBlank()) {
+                                            database.customerDao().deleteCustomerByMobile(doc.mobile)
+                                        }
+                                    }
+                                    DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val entity = CustomerEntity(
+                                            id = parsedId ?: 0L,
+                                            name = doc.name,
+                                            mobile = doc.mobile,
+                                            address = doc.address,
+                                            totalOrders = doc.totalOrders,
+                                            totalSpent = doc.totalSpent,
+                                            totalProfitGenerated = doc.totalProfitGenerated,
+                                            outstandingBalance = doc.outstandingBalance,
+                                            lastPurchaseDate = doc.lastPurchaseDate,
+                                            notes = doc.notes,
+                                            createdAt = doc.createdAt,
+                                            updatedAt = doc.updatedAt
+                                        )
+                                        database.customerDao().insertCustomer(entity)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -85,8 +160,35 @@ class FirebaseSyncRepository(
                         Log.w(TAG, "Expense listener error: ${error.message}")
                         return@addSnapshotListener
                     }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        Log.d(TAG, "Real-time expense updates received: ${snapshot.size()} docs")
+                    if (snapshot != null) {
+                        syncScope.launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document.toObject(ExpenseDoc::class.java)
+                                val docId = change.document.id
+                                val parsedId = docId.substringAfterLast("_exp_", "").toLongOrNull()
+                                when (change.type) {
+                                    DocumentChange.Type.REMOVED -> {
+                                        if (parsedId != null && parsedId > 0) {
+                                            database.expenseDao().deleteExpenseById(parsedId)
+                                        }
+                                    }
+                                    DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val entity = ExpenseEntity(
+                                            id = parsedId ?: 0L,
+                                            expenseDate = doc.expenseDate,
+                                            category = doc.category,
+                                            description = doc.description,
+                                            amount = doc.amount,
+                                            paymentMethod = doc.paymentMethod,
+                                            notes = doc.notes,
+                                            receiptRef = doc.receiptRef,
+                                            createdAt = doc.createdAt
+                                        )
+                                        database.expenseDao().insertExpense(entity)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
         } catch (e: Exception) {
@@ -106,6 +208,7 @@ class FirebaseSyncRepository(
     /**
      * One-Tap Cloud Backup & Full Bidirectional Sync.
      * Pushes all local Room records to Firestore and pulls remote updates.
+     * If documents were deleted in Firestore, they are deleted locally as well.
      */
     suspend fun performFullCloudSync(shopId: String = FirebaseManager.currentShopId): Result<String> = withContext(Dispatchers.IO) {
         val firestore = firestoreProvider() ?: run {
@@ -114,7 +217,7 @@ class FirebaseSyncRepository(
             return@withContext Result.failure(Exception("Firestore not initialized"))
         }
         _syncState.value = CloudSyncState.SYNCING
-        _syncMessage.value = "Backing up to Firestore..."
+        _syncMessage.value = "Synchronizing with Cloud..."
         try {
             val now = System.currentTimeMillis()
 
@@ -142,11 +245,27 @@ class FirebaseSyncRepository(
             )
             firestore.collection("shops").document(shopId).set(shopDoc, SetOptions.merge()).await()
 
-            // 2. Sync Products
+            // 2. Push & Pull Products (Mirrors deletion from Firebase)
+            val remoteProductsSnap = firestore.collection("products")
+                .whereEqualTo("shopId", shopId)
+                .get()
+                .await()
+
+            val remoteProducts = remoteProductsSnap.documents.mapNotNull { it.toObject(ProductDoc::class.java) }
+            val activeRemoteProducts = remoteProducts.filter { !it.isArchived }
+
             val localProducts = database.productDao().getAllActiveProductsSync()
-            if (localProducts.isNotEmpty()) {
+
+            // Push any local products that don't exist remotely
+            val remoteDocIds = remoteProductsSnap.documents.map { it.id }.toSet()
+            val unsavedLocalProducts = localProducts.filter { p ->
+                val docId = if (p.sku.isNotBlank()) "${shopId}_${p.sku}" else "${shopId}_prod_${p.id}"
+                docId !in remoteDocIds
+            }
+
+            if (unsavedLocalProducts.isNotEmpty()) {
                 val batch = firestore.batch()
-                localProducts.forEach { p ->
+                unsavedLocalProducts.forEach { p ->
                     val docId = if (p.sku.isNotBlank()) "${shopId}_${p.sku}" else "${shopId}_prod_${p.id}"
                     val ref = firestore.collection("products").document(docId)
                     val prodDoc = ProductDoc(
@@ -173,27 +292,57 @@ class FirebaseSyncRepository(
                 batch.commit().await()
             }
 
-            // 3. Sync Categories
-            val defaultCategories = listOf(
-                CategoryDoc(id = "${shopId}_cat_nuts", shopId = shopId, name = "Nuts", hindiName = "मेवे / काजू बादाम", iconName = "nuts", displayOrder = 1),
-                CategoryDoc(id = "${shopId}_cat_dryfruits", shopId = shopId, name = "Dry Fruits", hindiName = "सूखे मेवे / किशमिश खजूर", iconName = "dryfruit", displayOrder = 2),
-                CategoryDoc(id = "${shopId}_cat_seeds", shopId = shopId, name = "Seeds", hindiName = "बीज / चिया कद्दू", iconName = "seeds", displayOrder = 3),
-                CategoryDoc(id = "${shopId}_cat_berries", shopId = shopId, name = "Berries", hindiName = "बेरीज / क्रैनबेरी", iconName = "berries", displayOrder = 4),
-                CategoryDoc(id = "${shopId}_cat_spices", shopId = shopId, name = "Spices & Saffron", hindiName = "केसर व मसाले", iconName = "spices", displayOrder = 5),
-                CategoryDoc(id = "${shopId}_cat_giftboxes", shopId = shopId, name = "Gift Boxes", hindiName = "गिफ्ट पैक / डब्बे", iconName = "gift", displayOrder = 6)
-            )
-            val catBatch = firestore.batch()
-            defaultCategories.forEach { cat ->
-                val ref = firestore.collection("categories").document(cat.id)
-                catBatch.set(ref, cat, SetOptions.merge())
+            // Sync from Remote to Local: Insert/update active remote products
+            val remoteProductEntities = activeRemoteProducts.map { doc ->
+                val parsedId = doc.id.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                ProductEntity(
+                    id = parsedId,
+                    sku = doc.sku,
+                    name = doc.name,
+                    hindiName = doc.hindiName,
+                    category = doc.category,
+                    unit = doc.unit,
+                    purchasePrice = doc.purchasePrice,
+                    sellingPrice = doc.sellingPrice,
+                    currentStock = doc.currentStock,
+                    minStockLevel = doc.minStockLevel,
+                    supplierName = doc.supplierName,
+                    description = doc.description,
+                    colorHex = doc.colorHex,
+                    isArchived = false,
+                    createdAt = doc.createdAt,
+                    updatedAt = doc.updatedAt
+                )
             }
-            catBatch.commit().await()
+            if (remoteProductEntities.isNotEmpty()) {
+                database.productDao().insertAllProducts(remoteProductEntities)
+                val validProductIds = remoteProductEntities.map { it.id }.filter { it > 0 }
+                if (validProductIds.isNotEmpty()) {
+                    database.productDao().deleteProductsNotIn(validProductIds)
+                }
+            } else {
+                // If cloud has 0 active products, clear local products
+                database.productDao().clearAllProducts()
+            }
 
-            // 4. Sync Customers
+            // 3. Push & Pull Customers (Mirrors deletion from Firebase)
+            val remoteCustSnap = firestore.collection("customers")
+                .whereEqualTo("shopId", shopId)
+                .get()
+                .await()
+
+            val remoteCustomers = remoteCustSnap.documents.mapNotNull { it.toObject(CustomerDoc::class.java) }
             val localCustomers = database.customerDao().getAllCustomersSync()
-            if (localCustomers.isNotEmpty()) {
+
+            val remoteCustDocIds = remoteCustSnap.documents.map { it.id }.toSet()
+            val unsavedLocalCustomers = localCustomers.filter { c ->
+                val docId = if (c.mobile.isNotBlank()) "${shopId}_cust_${c.mobile}" else "${shopId}_cust_${c.id}"
+                docId !in remoteCustDocIds
+            }
+
+            if (unsavedLocalCustomers.isNotEmpty()) {
                 val custBatch = firestore.batch()
-                localCustomers.forEach { c ->
+                unsavedLocalCustomers.forEach { c ->
                     val docId = if (c.mobile.isNotBlank()) "${shopId}_cust_${c.mobile}" else "${shopId}_cust_${c.id}"
                     val ref = firestore.collection("customers").document(docId)
                     val custDoc = CustomerDoc(
@@ -216,11 +365,52 @@ class FirebaseSyncRepository(
                 custBatch.commit().await()
             }
 
-            // 5. Sync Expenses
+            // Sync from Remote to Local: Insert/update remote customers, prune deleted ones
+            val remoteCustomerEntities = remoteCustomers.map { doc ->
+                val parsedId = doc.id.substringAfterLast("_cust_", "").toLongOrNull() ?: 0L
+                CustomerEntity(
+                    id = parsedId,
+                    name = doc.name,
+                    mobile = doc.mobile,
+                    address = doc.address,
+                    totalOrders = doc.totalOrders,
+                    totalSpent = doc.totalSpent,
+                    totalProfitGenerated = doc.totalProfitGenerated,
+                    outstandingBalance = doc.outstandingBalance,
+                    lastPurchaseDate = doc.lastPurchaseDate,
+                    notes = doc.notes,
+                    createdAt = doc.createdAt,
+                    updatedAt = doc.updatedAt
+                )
+            }
+            if (remoteCustomerEntities.isNotEmpty()) {
+                database.customerDao().insertAllCustomers(remoteCustomerEntities)
+                val validCustIds = remoteCustomerEntities.map { it.id }.filter { it > 0 }
+                if (validCustIds.isNotEmpty()) {
+                    database.customerDao().deleteCustomersNotIn(validCustIds)
+                }
+            } else {
+                database.customerDao().clearAllCustomers()
+            }
+
+            // 4. Push & Pull Expenses (Mirrors deletion from Firebase)
+            val remoteExpSnap = firestore.collection("expenses")
+                .whereEqualTo("shopId", shopId)
+                .get()
+                .await()
+
+            val remoteExpenses = remoteExpSnap.documents.mapNotNull { it.toObject(ExpenseDoc::class.java) }
             val localExpenses = database.expenseDao().getAllExpensesSync()
-            if (localExpenses.isNotEmpty()) {
+
+            val remoteExpDocIds = remoteExpSnap.documents.map { it.id }.toSet()
+            val unsavedLocalExpenses = localExpenses.filter { exp ->
+                val docId = "${shopId}_exp_${exp.id}"
+                docId !in remoteExpDocIds
+            }
+
+            if (unsavedLocalExpenses.isNotEmpty()) {
                 val expBatch = firestore.batch()
-                localExpenses.forEach { exp ->
+                unsavedLocalExpenses.forEach { exp ->
                     val docId = "${shopId}_exp_${exp.id}"
                     val ref = firestore.collection("expenses").document(docId)
                     val expDoc = ExpenseDoc(
@@ -242,10 +432,37 @@ class FirebaseSyncRepository(
                 expBatch.commit().await()
             }
 
+            val remoteExpenseEntities = remoteExpenses.map { doc ->
+                val parsedId = doc.id.substringAfterLast("_exp_", "").toLongOrNull() ?: 0L
+                ExpenseEntity(
+                    id = parsedId,
+                    expenseDate = doc.expenseDate,
+                    category = doc.category,
+                    description = doc.description,
+                    amount = doc.amount,
+                    paymentMethod = doc.paymentMethod,
+                    notes = doc.notes,
+                    receiptRef = doc.receiptRef,
+                    createdAt = doc.createdAt
+                )
+            }
+            if (remoteExpenseEntities.isNotEmpty()) {
+                database.expenseDao().insertAllExpenses(remoteExpenseEntities)
+                val validExpIds = remoteExpenseEntities.map { it.id }.filter { it > 0 }
+                if (validExpIds.isNotEmpty()) {
+                    database.expenseDao().deleteExpensesNotIn(validExpIds)
+                }
+            } else {
+                database.expenseDao().clearAllExpenses()
+            }
+
+            // Start / refresh real-time listeners
+            startRealtimeListeners(shopId)
+
             _lastSyncTime.value = System.currentTimeMillis()
             _syncState.value = CloudSyncState.SUCCESS
-            _syncMessage.value = "All 14 Collections Synced with Firestore"
-            Log.d(TAG, "Full Cloud Firestore Sync completed successfully.")
+            _syncMessage.value = "Synced with Firestore (Deletions & Updates applied)"
+            Log.d(TAG, "Full Cloud Firestore Sync and Deletion Mirror completed successfully.")
             Result.success("Sync completed successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Cloud sync error: ${e.message}", e)

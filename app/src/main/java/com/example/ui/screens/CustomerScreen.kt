@@ -87,6 +87,12 @@ fun CustomerScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = { viewModel.syncWithCloud() },
+                        modifier = Modifier.testTag("sync_customer_btn")
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sync Cloud", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    IconButton(
                         onClick = { showAddCustomerDialog = true },
                         modifier = Modifier.testTag("add_customer_header_btn")
                     ) {
@@ -198,6 +204,7 @@ fun CustomerScreen(
                         onValueChange = { name = it },
                         label = { Text("Customer Name *") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Next),
                         modifier = Modifier.fillMaxWidth().testTag("add_cust_name")
                     )
                     OutlinedTextField(
@@ -205,13 +212,17 @@ fun CustomerScreen(
                         onValueChange = { mobile = it },
                         label = { Text("Mobile Number") },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Phone,
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Next
+                        ),
                         modifier = Modifier.fillMaxWidth().testTag("add_cust_mobile")
                     )
                     OutlinedTextField(
                         value = address,
                         onValueChange = { address = it },
                         label = { Text("City / Delivery Address") },
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }

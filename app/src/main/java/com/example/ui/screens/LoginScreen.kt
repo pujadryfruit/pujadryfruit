@@ -95,6 +95,7 @@ fun LoginScreen(
     }
 
     fun handleLoginOrSignUp() {
+        viewModel.clearAuthError()
         focusManager.clearFocus()
         if (!validateInputs()) return
 
@@ -313,6 +314,7 @@ fun LoginScreen(
                         onValueChange = {
                             email = it
                             emailError = null
+                            viewModel.clearAuthError()
                         },
                         label = { Text("Email Address") },
                         placeholder = { Text("Enter your email") },
@@ -321,7 +323,10 @@ fun LoginScreen(
                         },
                         trailingIcon = {
                             if (email.isNotEmpty()) {
-                                IconButton(onClick = { email = "" }) {
+                                IconButton(onClick = {
+                                    email = ""
+                                    viewModel.clearAuthError()
+                                }) {
                                     Icon(Icons.Default.Clear, contentDescription = "Clear email", modifier = Modifier.size(18.dp))
                                 }
                             }
@@ -345,6 +350,7 @@ fun LoginScreen(
                         onValueChange = {
                             password = it
                             passwordError = null
+                            viewModel.clearAuthError()
                         },
                         label = { Text("Password") },
                         placeholder = { Text("Enter your password") },

@@ -33,6 +33,18 @@ interface ProductDao {
     @Update
     suspend fun updateProduct(product: ProductEntity)
 
+    @Delete
+    suspend fun deleteProduct(product: ProductEntity)
+
+    @Query("DELETE FROM products WHERE id = :id")
+    suspend fun deleteProductById(id: Long)
+
+    @Query("DELETE FROM products WHERE id NOT IN (:validIds)")
+    suspend fun deleteProductsNotIn(validIds: List<Long>)
+
+    @Query("DELETE FROM products")
+    suspend fun clearAllProducts()
+
     @Query("UPDATE products SET currentStock = currentStock + :quantity, updatedAt = :timestamp WHERE id = :productId")
     suspend fun updateStock(productId: Long, quantity: Double, timestamp: Long = System.currentTimeMillis())
 

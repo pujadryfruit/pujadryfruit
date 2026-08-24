@@ -96,6 +96,12 @@ fun InventoryScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = { viewModel.syncWithCloud() },
+                        modifier = Modifier.testTag("sync_inventory_btn")
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sync Cloud", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    IconButton(
                         onClick = {
                             editingProduct = null
                             showAddEditSheet = true

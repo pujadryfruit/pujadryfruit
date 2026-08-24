@@ -30,8 +30,26 @@ interface CustomerDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCustomer(customer: CustomerEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllCustomers(customers: List<CustomerEntity>)
+
     @Update
     suspend fun updateCustomer(customer: CustomerEntity)
+
+    @Delete
+    suspend fun deleteCustomer(customer: CustomerEntity)
+
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteCustomerById(id: Long)
+
+    @Query("DELETE FROM customers WHERE mobile = :mobile")
+    suspend fun deleteCustomerByMobile(mobile: String)
+
+    @Query("DELETE FROM customers WHERE id NOT IN (:validIds)")
+    suspend fun deleteCustomersNotIn(validIds: List<Long>)
+
+    @Query("DELETE FROM customers")
+    suspend fun clearAllCustomers()
 
     @Query("UPDATE customers SET totalOrders = totalOrders + 1, totalSpent = totalSpent + :amount, totalProfitGenerated = totalProfitGenerated + :profit, outstandingBalance = outstandingBalance + :creditAdded, lastPurchaseDate = :purchaseDate, updatedAt = :timestamp WHERE id = :customerId")
     suspend fun recordCustomerSale(customerId: Long, amount: Double, profit: Double, creditAdded: Double, purchaseDate: Long, timestamp: Long = System.currentTimeMillis())

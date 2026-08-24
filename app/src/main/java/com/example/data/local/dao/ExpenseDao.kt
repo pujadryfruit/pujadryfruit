@@ -38,6 +38,9 @@ interface ExpenseDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertExpense(expense: ExpenseEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllExpenses(expenses: List<ExpenseEntity>)
+
     @Update
     suspend fun updateExpense(expense: ExpenseEntity)
 
@@ -46,6 +49,12 @@ interface ExpenseDao {
 
     @Query("DELETE FROM expenses WHERE id = :id")
     suspend fun deleteExpenseById(id: Long)
+
+    @Query("DELETE FROM expenses WHERE id NOT IN (:validIds)")
+    suspend fun deleteExpensesNotIn(validIds: List<Long>)
+
+    @Query("DELETE FROM expenses")
+    suspend fun clearAllExpenses()
 }
 
 @Dao

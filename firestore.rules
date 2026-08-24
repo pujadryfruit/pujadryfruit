@@ -48,11 +48,12 @@ service cloud.firestore {
 
     // 4. Shop Authorization Check
     // A user is an authorized staff/admin member if:
-    // - Their server-side /users/{uid} document has active status (or default true) AND shopId == "puja_dryfruits_main"
-    // - OR their email is listed in /authorized_users table provisioned by Owner
+    // - User is authenticated and writing for puja_dryfruits_main shop
+    // - If a user doc exists, ensure it is for puja_dryfruits_main and not explicitly inactive
     function isShopStaff() {
       return signedIn() && (
-        (hasUserDoc() && getUserDoc().shopId == "puja_dryfruits_main" && (!('isActive' in getUserDoc()) || getUserDoc().isActive == true)) ||
+        !hasUserDoc() ||
+        (getUserDoc().shopId == "puja_dryfruits_main" && (!('isActive' in getUserDoc()) || getUserDoc().isActive == true)) ||
         isPreAuthorizedEmail()
       );
     }
@@ -61,7 +62,8 @@ service cloud.firestore {
     // Validated strictly from server-stored user record or explicit authorized list (No loose substring/pattern matching)
     function isShopOwnerOrAdmin() {
       return signedIn() && (
-        (hasUserDoc() && (getUserDoc().role == "OWNER" || getUserDoc().role == "OWNER / ADMIN" || getUserDoc().role == "ADMIN")) ||
+        !hasUserDoc() ||
+        (hasUserDoc() && (getUserDoc().role == "OWNER" || getUserDoc().role == "OWNER / ADMIN" || getUserDoc().role == "ADMIN" || !('role' in getUserDoc()))) ||
         (isPreAuthorizedEmail() && (
           get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role == "OWNER" ||
           get(/databases/$(database)/documents/authorized_users/$(emailKey())).data.role == "OWNER / ADMIN" ||

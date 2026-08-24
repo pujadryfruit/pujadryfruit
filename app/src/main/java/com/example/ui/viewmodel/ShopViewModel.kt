@@ -89,6 +89,9 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     init {
         FirebaseManager.initialize(application)
         syncRepo.startRealtimeListeners()
+        viewModelScope.launch {
+            syncRepo.performFullCloudSync()
+        }
     }
 
     override fun onCleared() {
@@ -675,6 +678,10 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearAuthError() {
+        authService.clearError()
+    }
+
     fun signInWithEmail(email: String, pass: String) {
         viewModelScope.launch {
             _uiEventMessage.emit("Signing in...")
@@ -773,6 +780,10 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             authService.signOut(context)
             _uiEventMessage.emit("Signed out successfully")
         }
+    }
+
+    fun syncWithCloud() {
+        triggerFullCloudSync()
     }
 
     fun triggerFullCloudSync() {

@@ -143,6 +143,12 @@ class FirebaseAuthService(
         }
     }
 
+    fun clearError() {
+        if (_authState.value is AuthState.Error) {
+            _authState.value = AuthState.Unauthenticated
+        }
+    }
+
     suspend fun signInWithEmailPassword(email: String, pass: String): Result<UserDoc> = withContext(Dispatchers.IO) {
         val auth = authProvider() ?: return@withContext Result.failure(Exception("Firebase Auth not initialized"))
         _authState.value = AuthState.Loading

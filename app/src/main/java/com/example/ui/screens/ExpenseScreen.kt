@@ -84,6 +84,12 @@ fun ExpenseScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = { viewModel.syncWithCloud() },
+                        modifier = Modifier.testTag("sync_expense_btn")
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sync Cloud", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    IconButton(
                         onClick = { showAddExpenseDialog = true },
                         modifier = Modifier.testTag("add_expense_header_btn")
                     ) {
