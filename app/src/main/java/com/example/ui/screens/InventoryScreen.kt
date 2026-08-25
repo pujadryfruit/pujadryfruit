@@ -456,14 +456,15 @@ fun ProductItemCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Pricing & Stock Grid
+            // Pricing & Stock Grid (Cost Price hidden from general catalog list)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
                     .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
                     Text("Selling Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
@@ -472,14 +473,6 @@ fun ProductItemCard(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
                         color = GeometricPrimary
-                    )
-                }
-                Column {
-                    Text("Cost Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                    Text(
-                        text = CurrencyUtils.formatInr(product.purchasePrice, false),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
@@ -501,7 +494,7 @@ fun ProductItemCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Margin: ${CurrencyUtils.formatPercent(margin)} • Stock Value: ${CurrencyUtils.formatInr(stockValue, false)}",
+                    text = "Stock: ${CurrencyUtils.formatQuantity(product.currentStock, product.unit)} • ${product.unit}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp

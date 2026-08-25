@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.Context
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,6 +40,7 @@ import com.example.ui.theme.*
 import com.example.ui.viewmodel.ShopViewModel
 import com.example.util.CurrencyUtils
 import com.example.util.DateUtils
+import com.example.util.PdfInvoiceGenerator
 import com.example.util.ShareUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,15 +82,26 @@ fun InvoiceViewScreen(
                     if (activeSale != null && !activeSale!!.isCancelled) {
                         IconButton(
                             onClick = {
-                                val text = ShareUtils.generateInvoiceText(
-                                    shopProfile ?: ShopProfile(),
-                                    activeSale!!,
-                                    activeItems
-                                )
-                                ShareUtils.shareText(context, "Invoice ${activeSale!!.invoiceNumber}", text)
+                                try {
+                                    val pdfFile = PdfInvoiceGenerator.generateInvoicePdf(
+                                        context,
+                                        shopProfile ?: ShopProfile(),
+                                        activeSale!!,
+                                        activeItems
+                                    )
+                                    val caption = "Invoice #${activeSale!!.invoiceNumber} from ${(shopProfile ?: ShopProfile()).shopName}"
+                                    PdfInvoiceGenerator.sharePdf(context, pdfFile, "Invoice ${activeSale!!.invoiceNumber}", caption)
+                                } catch (e: Exception) {
+                                    val text = ShareUtils.generateInvoiceText(
+                                        shopProfile ?: ShopProfile(),
+                                        activeSale!!,
+                                        activeItems
+                                    )
+                                    ShareUtils.shareText(context, "Invoice ${activeSale!!.invoiceNumber}", text)
+                                }
                             }
                         ) {
-                            Icon(Icons.Default.Share, contentDescription = "Share")
+                            Icon(Icons.Default.Share, contentDescription = "Share PDF")
                         }
                     }
                 },
@@ -103,52 +116,92 @@ fun InvoiceViewScreen(
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.navigationBarsPadding()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // WhatsApp Share
-                        Button(
-                            onClick = {
-                                val text = ShareUtils.generateInvoiceText(
-                                    shopProfile ?: ShopProfile(),
-                                    activeSale!!,
-                                    activeItems
-                                )
-                                ShareUtils.shareViaWhatsApp(context, activeSale!!.customerMobile, text)
-                            },
-                            modifier = Modifier
-                                .weight(1.2f)
-                                .height(50.dp)
-                                .testTag("whatsapp_share_btn"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("WhatsApp Bill", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
+                            // WhatsApp PDF Share
+                            Button(
+                                onClick = {
+                                    try {
+                                        val pdfFile = PdfInvoiceGenerator.generateInvoicePdf(
+                                            context,
+                                            shopProfile ?: ShopProfile(),
+                                            activeSale!!,
+                                            activeItems
+                                        )
+                                        val caption = ShareUtils.generateInvoiceText(
+                                            shopProfile ?: ShopProfile(),
+                                            activeSale!!,
+                                            activeItems
+                                        )
+                                        PdfInvoiceGenerator.sharePdfViaWhatsApp(
+                                            context,
+                                            pdfFile,
+                                            activeSale!!.customerMobile,
+                                            caption
+                                        )
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "PDF generated text mode fallback", Toast.LENGTH_SHORT).show()
+                                        val text = ShareUtils.generateInvoiceText(
+                                            shopProfile ?: ShopProfile(),
+                                            activeSale!!,
+                                            activeItems
+                                        )
+                                        ShareUtils.shareViaWhatsApp(context, activeSale!!.customerMobile, text)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .height(50.dp)
+                                    .testTag("whatsapp_share_btn"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366))
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("WhatsApp PDF", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
 
-                        // Share Text / PDF Print
-                        OutlinedButton(
-                            onClick = {
-                                val text = ShareUtils.generateInvoiceText(
-                                    shopProfile ?: ShopProfile(),
-                                    activeSale!!,
-                                    activeItems
-                                )
-                                ShareUtils.shareText(context, "Invoice ${activeSale!!.invoiceNumber}", text)
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(50.dp),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Print / Share", fontWeight = FontWeight.Bold)
+                            // Print / Share PDF
+                            Button(
+                                onClick = {
+                                    try {
+                                        val pdfFile = PdfInvoiceGenerator.generateInvoicePdf(
+                                            context,
+                                            shopProfile ?: ShopProfile(),
+                                            activeSale!!,
+                                            activeItems
+                                        )
+                                        val caption = "Tax Invoice #${activeSale!!.invoiceNumber}"
+                                        PdfInvoiceGenerator.sharePdf(context, pdfFile, "Tax Invoice ${activeSale!!.invoiceNumber}", caption)
+                                        Toast.makeText(context, "PDF Invoice Ready for Print & Share", Toast.LENGTH_SHORT).show()
+                                    } catch (e: Exception) {
+                                        val text = ShareUtils.generateInvoiceText(
+                                            shopProfile ?: ShopProfile(),
+                                            activeSale!!,
+                                            activeItems
+                                        )
+                                        ShareUtils.shareText(context, "Invoice ${activeSale!!.invoiceNumber}", text)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp)
+                                    .testTag("print_pdf_btn"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PDF / Print", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

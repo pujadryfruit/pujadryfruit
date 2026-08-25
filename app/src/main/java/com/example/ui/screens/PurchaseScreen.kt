@@ -387,7 +387,8 @@ fun AddPurchaseSheetContent(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight(0.92f)
-            .padding(20.dp)
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+            .imePadding()
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -417,83 +418,109 @@ fun AddPurchaseSheetContent(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Searchable Supplier Dropdown
+            // 1. Searchable Supplier Section
             item {
                 Text("Supplier (आपूर्तिकर्ता)", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(4.dp))
                 
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = supplierQuery,
-                        onValueChange = {
-                            supplierQuery = it
-                            selectedSupplier = null
-                            isSupplierDropdownExpanded = true
-                        },
-                        label = { Text("Select or Search Supplier *") },
-                        placeholder = { Text("Type supplier name or mobile...") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Business, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        },
-                        trailingIcon = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (supplierQuery.isNotEmpty()) {
-                                    IconButton(onClick = {
-                                        supplierQuery = ""
-                                        selectedSupplier = null
-                                        supplierPhone = ""
-                                    }) {
-                                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                                    }
-                                }
-                                IconButton(onClick = { isSupplierDropdownExpanded = !isSupplierDropdownExpanded }) {
-                                    Icon(
-                                        imageVector = if (isSupplierDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
-                                        contentDescription = "Toggle Dropdown"
-                                    )
+                OutlinedTextField(
+                    value = supplierQuery,
+                    onValueChange = {
+                        supplierQuery = it
+                        selectedSupplier = null
+                        isSupplierDropdownExpanded = true
+                    },
+                    label = { Text("Select or Search Supplier *") },
+                    placeholder = { Text("Type supplier name or mobile...") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Business, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (supplierQuery.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    supplierQuery = ""
+                                    selectedSupplier = null
+                                    supplierPhone = ""
+                                    isSupplierDropdownExpanded = false
+                                }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
                                 }
                             }
-                        },
+                            IconButton(onClick = { isSupplierDropdownExpanded = !isSupplierDropdownExpanded }) {
+                                Icon(
+                                    imageVector = if (isSupplierDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                                    contentDescription = "Toggle Dropdown"
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("supplier_name_input"),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                // Inline Suggestion Box (Prevents keyboard from closing on typing)
+                AnimatedVisibility(
+                    visible = isSupplierDropdownExpanded && (selectedSupplier == null || supplierQuery != selectedSupplier?.name)
+                ) {
+                    Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("supplier_name_input"),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    DropdownMenu(
-                        expanded = isSupplierDropdownExpanded,
-                        onDismissRequest = { isSupplierDropdownExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.9f)
+                            .padding(top = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
-                        // Option to add new supplier
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Quick Add Supplier Button
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        isSupplierDropdownExpanded = false
+                                        newSupplierName = supplierQuery.trim()
+                                        newSupplierPhone = ""
+                                        newSupplierAddress = ""
+                                        newSupplierGstin = ""
+                                        showNewSupplierDialog = true
+                                    },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Icon(Icons.Default.AddCircle, contentDescription = null, tint = GeometricPrimary, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = if (supplierQuery.isNotBlank()) "+ Add New Supplier: \"$supplierQuery\"" else "+ Add New Supplier",
                                         fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodyMedium,
                                         color = GeometricPrimary
                                     )
                                 }
-                            },
-                            onClick = {
-                                isSupplierDropdownExpanded = false
-                                newSupplierName = supplierQuery.trim()
-                                newSupplierPhone = ""
-                                newSupplierAddress = ""
-                                newSupplierGstin = ""
-                                showNewSupplierDialog = true
                             }
-                        )
 
-                        if (filteredSuppliers.isNotEmpty()) {
-                            HorizontalDivider()
-                            filteredSuppliers.forEach { supp ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
+                            if (filteredSuppliers.isNotEmpty()) {
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                filteredSuppliers.take(5).forEach { supp ->
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedSupplier = supp
+                                                supplierQuery = supp.name
+                                                supplierPhone = supp.mobile
+                                                isSupplierDropdownExpanded = false
+                                            },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color.Transparent
+                                    ) {
+                                        Column(modifier = Modifier.padding(8.dp)) {
                                             Text(supp.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                                             val details = buildList {
                                                 if (supp.mobile.isNotEmpty()) add(supp.mobile)
@@ -504,14 +531,8 @@ fun AddPurchaseSheetContent(
                                                 Text(details, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                                             }
                                         }
-                                    },
-                                    onClick = {
-                                        selectedSupplier = supp
-                                        supplierQuery = supp.name
-                                        supplierPhone = supp.mobile
-                                        isSupplierDropdownExpanded = false
                                     }
-                                )
+                                }
                             }
                         }
                     }
@@ -582,48 +603,80 @@ fun AddPurchaseSheetContent(
                 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = productSearchQuery,
-                        onValueChange = {
-                            productSearchQuery = it
-                            isProductDropdownExpanded = true
-                        },
-                        label = { Text("Search & Select Product to Inward") },
-                        placeholder = { Text("Search Almonds, Kaju, Spices, SKU...") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        },
-                        trailingIcon = {
+                OutlinedTextField(
+                    value = productSearchQuery,
+                    onValueChange = {
+                        productSearchQuery = it
+                        isProductDropdownExpanded = true
+                    },
+                    label = { Text("Search & Select Product to Inward") },
+                    placeholder = { Text("Search Almonds, Kaju, Spices, SKU...") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (productSearchQuery.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    productSearchQuery = ""
+                                    isProductDropdownExpanded = false
+                                }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                                }
+                            }
                             IconButton(onClick = { isProductDropdownExpanded = !isProductDropdownExpanded }) {
                                 Icon(
                                     imageVector = if (isProductDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
                                     contentDescription = "Toggle Products"
                                 )
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp)
+                )
 
-                    DropdownMenu(
-                        expanded = isProductDropdownExpanded,
-                        onDismissRequest = { isProductDropdownExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.9f)
+                // Inline Product Suggestions (Keeps soft keyboard open and responsive)
+                AnimatedVisibility(
+                    visible = isProductDropdownExpanded || productSearchQuery.isNotBlank()
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
-                        if (filteredProducts.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("No matching products found", color = MaterialTheme.colorScheme.outline) },
-                                onClick = { }
-                            )
-                        } else {
-                            filteredProducts.forEach { prod ->
-                                val isLoose = prod.unit.equals("KG", true) || prod.unit.equals("Kilogram", true) || prod.unit.equals("Gram", true)
-                                DropdownMenuItem(
-                                    text = {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (filteredProducts.isEmpty()) {
+                                Text(
+                                    text = "No matching products found",
+                                    color = MaterialTheme.colorScheme.outline,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            } else {
+                                filteredProducts.take(6).forEach { prod ->
+                                    val isLoose = prod.unit.equals("KG", true) || prod.unit.equals("Kilogram", true) || prod.unit.equals("Gram", true)
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                activeProductToAdd = prod
+                                                itemQtyInput = if (isLoose) "10" else "5"
+                                                itemCostInput = if (prod.purchasePrice > 0) prod.purchasePrice.toString() else ""
+                                                productSearchQuery = ""
+                                                isProductDropdownExpanded = false
+                                            },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surface
+                                    ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(10.dp),
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
@@ -640,22 +693,16 @@ fun AddPurchaseSheetContent(
                                                 color = if (isLoose) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
                                             ) {
                                                 Text(
-                                                    text = prod.unit,
+                                                    text = "+ Add",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                                 )
                                             }
                                         }
-                                    },
-                                    onClick = {
-                                        activeProductToAdd = prod
-                                        itemQtyInput = if (isLoose) "10" else "5"
-                                        itemCostInput = if (prod.purchasePrice > 0) prod.purchasePrice.toString() else ""
-                                        productSearchQuery = ""
-                                        isProductDropdownExpanded = false
                                     }
-                                )
+                                }
                             }
                         }
                     }

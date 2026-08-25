@@ -144,15 +144,10 @@ fun NewSaleScreen(
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = "Est. Profit: +${CurrencyUtils.formatInr(grossProfit)}",
-                                style = MaterialTheme.typography.labelSmall,
+                                text = "Items: ${cartItems.size}",
+                                style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = SuccessGreen
-                            )
-                            Text(
-                                text = "Margin: ${CurrencyUtils.formatPercent(profitMargin)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -734,7 +729,7 @@ fun CartItemCard(
                     }
                 }
 
-                // Total & Profit Preview
+                // Total Subtotal for this Item
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
                         text = CurrencyUtils.formatInr(cartItem.itemSubtotal),
@@ -743,11 +738,10 @@ fun CartItemCard(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = "+${CurrencyUtils.formatInr(cartItem.itemProfit, false)} profit",
+                        text = "${CurrencyUtils.formatInr(cartItem.sellingPrice, false)} / ${cartItem.unit}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = SuccessGreen,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        color = MaterialTheme.colorScheme.outline,
+                        fontSize = 11.sp
                     )
                 }
             }

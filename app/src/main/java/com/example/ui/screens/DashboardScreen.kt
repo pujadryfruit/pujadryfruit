@@ -328,7 +328,7 @@ fun DashboardScreen(
                             title = "Gross Profit",
                             hindiTitle = "सकल लाभ",
                             value = CurrencyUtils.formatInr(metrics.grossProfit),
-                            subtitle = "COGS: ${CurrencyUtils.formatInr(metrics.totalCost, false)}",
+                            subtitle = "Profit on goods sold",
                             icon = Icons.Default.AccountBalanceWallet,
                             cardBgColor = CardOrdersBg,
                             contentColor = CardOrdersText,
