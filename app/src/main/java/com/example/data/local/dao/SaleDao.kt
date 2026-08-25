@@ -31,6 +31,9 @@ interface SaleDao {
     @Query("SELECT * FROM sales ORDER BY saleDate DESC")
     fun getAllSales(): Flow<List<SaleEntity>>
 
+    @Query("SELECT * FROM sales ORDER BY saleDate DESC")
+    suspend fun getAllSalesSync(): List<SaleEntity>
+
     @Query("SELECT * FROM sales WHERE saleDate BETWEEN :startDate AND :endDate ORDER BY saleDate DESC")
     fun getSalesByDateRange(startDate: Long, endDate: Long): Flow<List<SaleEntity>>
 

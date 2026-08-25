@@ -608,13 +608,24 @@ class FirebaseSyncRepository(
                 database.expenseDao().clearAllExpenses()
             }
 
-            // 6. Pull Remote Sales (if local is empty or multi-device sync)
+            // 6. Push Local Sales and Pull Remote Sales
             try {
+                val localSales = database.saleDao().getAllSalesSync()
                 val remoteSalesSnap = firestore.collection("sales")
                     .whereEqualTo("shopId", shopId)
                     .get()
                     .await()
 
+                val remoteInvoiceNumbers = remoteSalesSnap.documents.mapNotNull { it.getString("invoiceNumber") }.toSet()
+                
+                // Push any unsynced local sales to Firestore immediately
+                val unsyncedLocalSales = localSales.filter { it.invoiceNumber !in remoteInvoiceNumbers }
+                for (unsynced in unsyncedLocalSales) {
+                    val localItems = database.saleDao().getSaleItemsSync(unsynced.id)
+                    syncSaleToCloud(unsynced, localItems, shopId)
+                }
+
+                // Pull any remote sales not present locally
                 for (docSnap in remoteSalesSnap.documents) {
                     val saleDoc = docSnap.toObject(SaleDoc::class.java)
                     if (saleDoc != null && saleDoc.invoiceNumber.isNotBlank()) {
@@ -673,7 +684,7 @@ class FirebaseSyncRepository(
                     }
                 }
             } catch (se: Exception) {
-                Log.w(TAG, "Sales cloud pull warning: ${se.message}")
+                Log.w(TAG, "Sales cloud sync warning: ${se.message}")
             }
 
             // Start / refresh real-time listeners

@@ -161,8 +161,59 @@ class FirestoreTransactionManager(
             Log.d(TAG, "Sale transaction $saleId executed atomically in Firestore")
             Result.success(saleId)
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing sale transaction: ${e.message}", e)
-            Result.failure(e)
+            Log.e(TAG, "Error executing sale transaction via runTransaction: ${e.message}, attempting direct batch write fallback", e)
+            try {
+                // Direct batch write fallback
+                val saleRef = firestore.collection("sales").document()
+                val saleId = saleRef.id
+                val now = System.currentTimeMillis()
+                val finalSaleDoc = saleDoc.copy(
+                    id = saleId,
+                    shopId = shopId,
+                    createdByUserId = userId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+
+                val batch = firestore.batch()
+                batch.set(saleRef, finalSaleDoc)
+
+                saleItems.forEach { item ->
+                    val itemRef = firestore.collection("saleItems").document()
+                    val finalItem = item.copy(
+                        id = itemRef.id,
+                        saleId = saleId,
+                        shopId = shopId,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                    batch.set(itemRef, finalItem)
+                }
+
+                // Invoice record
+                val invoiceRef = firestore.collection("invoices").document()
+                val invoiceDoc = InvoiceDoc(
+                    id = invoiceRef.id,
+                    shopId = shopId,
+                    saleId = saleId,
+                    invoiceNumber = finalSaleDoc.invoiceNumber,
+                    customerName = finalSaleDoc.customerName,
+                    customerMobile = finalSaleDoc.customerMobile,
+                    date = finalSaleDoc.saleDate,
+                    grandTotal = finalSaleDoc.grandTotal,
+                    paymentStatus = finalSaleDoc.paymentStatus,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                batch.set(invoiceRef, invoiceDoc)
+
+                batch.commit().await()
+                Log.d(TAG, "Sale transaction $saleId saved directly via batch write")
+                Result.success(saleId)
+            } catch (fallbackEx: Exception) {
+                Log.e(TAG, "Direct batch fallback for sale failed: ${fallbackEx.message}", fallbackEx)
+                Result.failure(fallbackEx)
+            }
         }
     }
 

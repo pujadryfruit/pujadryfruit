@@ -318,12 +318,22 @@ class FirebaseAuthService(
 
     suspend fun sendPasswordResetEmail(email: String): Result<String> = withContext(Dispatchers.IO) {
         val auth = authProvider() ?: return@withContext Result.failure(Exception("Firebase Auth not initialized"))
+        val trimmedEmail = email.trim()
         try {
-            auth.sendPasswordResetEmail(email.trim()).await()
-            Result.success("Password reset instructions sent to $email")
+            auth.sendPasswordResetEmail(trimmedEmail).await()
+            Log.d(TAG, "Password reset email sent to $trimmedEmail")
+            Result.success("Password reset link sent to $trimmedEmail! Please check your Inbox and Spam folder.")
         } catch (e: Exception) {
             Log.e(TAG, "Password reset error: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Failed to send reset email"))
+            val friendlyMsg = when {
+                e.message?.contains("user-not-found", ignoreCase = true) == true ||
+                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found with $trimmedEmail. Please register or contact Admin."
+                e.message?.contains("invalid-email", ignoreCase = true) == true -> "Please enter a valid email address format."
+                e.message?.contains("network", ignoreCase = true) == true -> "Network connection error. Please check your internet connection."
+                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many attempts. Please try again after a few minutes."
+                else -> e.localizedMessage ?: "Failed to send reset email. Please try again."
+            }
+            Result.failure(Exception(friendlyMsg))
         }
     }
 
