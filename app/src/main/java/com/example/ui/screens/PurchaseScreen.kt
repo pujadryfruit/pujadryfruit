@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -7,14 +8,17 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.entities.ProductEntity
 import com.example.data.local.entities.PurchaseEntity
+import com.example.data.local.entities.SupplierEntity
 import com.example.ui.components.CustomSearchBar
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.StatusBadge
@@ -41,6 +46,7 @@ fun PurchaseScreen(
 ) {
     val purchases by viewModel.allPurchases.collectAsStateWithLifecycle()
     val allProducts by viewModel.allActiveProducts.collectAsStateWithLifecycle()
+    val allSuppliers by viewModel.allSuppliers.collectAsStateWithLifecycle()
 
     var showAddPurchaseSheet by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -138,9 +144,24 @@ fun PurchaseScreen(
         ) {
             AddPurchaseSheetContent(
                 products = allProducts,
-                onSave = { supplier, phone, invRef, mode, status, notes, items, priceOverrides ->
-                    viewModel.recordPurchase(supplier, phone, invRef, mode, status, notes, items, priceOverrides)
-                    showAddPurchaseSheet = false
+                suppliers = allSuppliers,
+                onAddSupplier = { name, phone, company, address, gstin, onDone ->
+                    val supp = SupplierEntity(
+                        name = name,
+                        mobile = phone,
+                        contactPerson = company,
+                        address = address,
+                        gstin = gstin
+                    )
+                    viewModel.addSupplier(supp) { saved ->
+                        onDone(saved)
+                    }
+                },
+                onSave = { supplier, phone, invRef, mode, status, notes, items, priceOverrides, onComplete ->
+                    viewModel.recordPurchase(supplier, phone, invRef, mode, status, notes, items, priceOverrides) {
+                        onComplete()
+                        showAddPurchaseSheet = false
+                    }
                 },
                 onCancel = { showAddPurchaseSheet = false }
             )
@@ -210,9 +231,12 @@ fun PurchaseCard(purchase: PurchaseEntity) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddPurchaseSheetContent(
     products: List<ProductEntity>,
+    suppliers: List<SupplierEntity>,
+    onAddSupplier: (name: String, phone: String, company: String, address: String, gstin: String, onDone: (SupplierEntity) -> Unit) -> Unit,
     onSave: (
         supplierName: String,
         supplierPhone: String,
@@ -221,26 +245,148 @@ fun AddPurchaseSheetContent(
         paymentStatus: String,
         notes: String,
         items: List<Pair<ProductEntity, Double>>,
-        priceOverrides: Map<Long, Double>
+        priceOverrides: Map<Long, Double>,
+        onComplete: () -> Unit
     ) -> Unit,
     onCancel: () -> Unit
 ) {
-    var supplierName by remember { mutableStateOf("") }
+    var supplierQuery by remember { mutableStateOf("") }
+    var selectedSupplier by remember { mutableStateOf<SupplierEntity?>(null) }
     var supplierPhone by remember { mutableStateOf("") }
+    var isSupplierDropdownExpanded by remember { mutableStateOf(false) }
+
+    // Dialog for adding a new supplier
+    var showNewSupplierDialog by remember { mutableStateOf(false) }
+    var newSupplierName by remember { mutableStateOf("") }
+    var newSupplierPhone by remember { mutableStateOf("") }
+    var newSupplierAddress by remember { mutableStateOf("") }
+    var newSupplierGstin by remember { mutableStateOf("") }
+    var isAddingSupplier by remember { mutableStateOf(false) }
+
     var invoiceRef by remember { mutableStateOf("") }
     var paymentMethod by remember { mutableStateOf("Bank Transfer") }
     var paymentStatus by remember { mutableStateOf("PAID") }
     var notes by remember { mutableStateOf("") }
 
-    val selectedItems = remember { mutableStateMapOf<Long, Double>() } // productId -> quantity
-    val priceOverrides = remember { mutableStateMapOf<Long, Double>() } // productId -> cost price
+    // Searchable Product Dropdown & Added items
+    var productSearchQuery by remember { mutableStateOf("") }
+    var isProductDropdownExpanded by remember { mutableStateOf(false) }
+    var activeProductToAdd by remember { mutableStateOf<ProductEntity?>(null) }
+    var itemQtyInput by remember { mutableStateOf("1") }
+    var itemCostInput by remember { mutableStateOf("") }
 
-    val paymentMethods = listOf("Bank Transfer", "UPI", "Cash", "Cheque", "Credit")
+    val selectedItems = remember { mutableStateMapOf<Long, Pair<ProductEntity, Double>>() } // productId -> Pair(Product, Qty)
+    val priceOverrides = remember { mutableStateMapOf<Long, Double>() } // productId -> Cost Price per unit
+
+    var isSavingPurchase by remember { mutableStateOf(false) }
+
+    val paymentMethods = listOf("Bank Transfer", "UPI", "Cash", "Cheque", "Credit / Udhaar")
+
+    val filteredSuppliers = remember(supplierQuery, suppliers) {
+        if (supplierQuery.isBlank()) suppliers
+        else suppliers.filter {
+            it.name.contains(supplierQuery, ignoreCase = true) ||
+            it.mobile.contains(supplierQuery, ignoreCase = true) ||
+            it.contactPerson.contains(supplierQuery, ignoreCase = true)
+        }
+    }
+
+    val filteredProducts = remember(productSearchQuery, products) {
+        if (productSearchQuery.isBlank()) products.take(8)
+        else products.filter {
+            it.name.contains(productSearchQuery, ignoreCase = true) ||
+            it.hindiName.contains(productSearchQuery, ignoreCase = true) ||
+            it.sku.contains(productSearchQuery, ignoreCase = true) ||
+            it.category.contains(productSearchQuery, ignoreCase = true)
+        }
+    }
+
+    // Add New Supplier Dialog
+    if (showNewSupplierDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isAddingSupplier) showNewSupplierDialog = false },
+            title = { Text("Add New Supplier", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = newSupplierName,
+                        onValueChange = { newSupplierName = it },
+                        label = { Text("Supplier / Firm Name *") },
+                        placeholder = { Text("e.g. Kashmir Nut Traders") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newSupplierPhone,
+                        onValueChange = { newSupplierPhone = it },
+                        label = { Text("Mobile Number") },
+                        placeholder = { Text("e.g. 9876543210") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newSupplierAddress,
+                        onValueChange = { newSupplierAddress = it },
+                        label = { Text("City / Address") },
+                        placeholder = { Text("e.g. Khari Baoli, Delhi") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newSupplierGstin,
+                        onValueChange = { newSupplierGstin = it },
+                        label = { Text("GSTIN (Optional)") },
+                        placeholder = { Text("07AAAAA0000A1Z5") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newSupplierName.isNotBlank() && !isAddingSupplier) {
+                            isAddingSupplier = true
+                            onAddSupplier(
+                                newSupplierName.trim(),
+                                newSupplierPhone.trim(),
+                                "",
+                                newSupplierAddress.trim(),
+                                newSupplierGstin.trim()
+                            ) { saved ->
+                                isAddingSupplier = false
+                                selectedSupplier = saved
+                                supplierQuery = saved.name
+                                supplierPhone = saved.mobile
+                                showNewSupplierDialog = false
+                            }
+                        }
+                    },
+                    enabled = newSupplierName.isNotBlank() && !isAddingSupplier
+                ) {
+                    if (isAddingSupplier) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text("Save Supplier")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showNewSupplierDialog = false },
+                    enabled = !isAddingSupplier
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(0.9f)
+            .fillMaxHeight(0.92f)
             .padding(20.dp)
     ) {
         Row(
@@ -248,12 +394,19 @@ fun AddPurchaseSheetContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Record Stock Procurement",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            IconButton(onClick = onCancel) {
+            Column {
+                Text(
+                    text = "Record Stock Procurement",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Inward wholesale batch with supplier tracking",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            IconButton(onClick = onCancel, enabled = !isSavingPurchase) {
                 Icon(Icons.Default.Close, contentDescription = "Close")
             }
         }
@@ -262,19 +415,110 @@ fun AddPurchaseSheetContent(
 
         LazyColumn(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // 1. Searchable Supplier Dropdown
             item {
-                OutlinedTextField(
-                    value = supplierName,
-                    onValueChange = { supplierName = it },
-                    label = { Text("Supplier Name / Firm *") },
-                    placeholder = { Text("e.g. Kashmir Nut Exporters") },
-                    modifier = Modifier.fillMaxWidth().testTag("supplier_name_input"),
-                    singleLine = true
-                )
+                Text("Supplier (आपूर्तिकर्ता)", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = supplierQuery,
+                        onValueChange = {
+                            supplierQuery = it
+                            selectedSupplier = null
+                            isSupplierDropdownExpanded = true
+                        },
+                        label = { Text("Select or Search Supplier *") },
+                        placeholder = { Text("Type supplier name or mobile...") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Business, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        },
+                        trailingIcon = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (supplierQuery.isNotEmpty()) {
+                                    IconButton(onClick = {
+                                        supplierQuery = ""
+                                        selectedSupplier = null
+                                        supplierPhone = ""
+                                    }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                IconButton(onClick = { isSupplierDropdownExpanded = !isSupplierDropdownExpanded }) {
+                                    Icon(
+                                        imageVector = if (isSupplierDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                                        contentDescription = "Toggle Dropdown"
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("supplier_name_input"),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    DropdownMenu(
+                        expanded = isSupplierDropdownExpanded,
+                        onDismissRequest = { isSupplierDropdownExpanded = false },
+                        modifier = Modifier.fillMaxWidth(0.9f)
+                    ) {
+                        // Option to add new supplier
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AddCircle, contentDescription = null, tint = GeometricPrimary, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (supplierQuery.isNotBlank()) "+ Add New Supplier: \"$supplierQuery\"" else "+ Add New Supplier",
+                                        fontWeight = FontWeight.Bold,
+                                        color = GeometricPrimary
+                                    )
+                                }
+                            },
+                            onClick = {
+                                isSupplierDropdownExpanded = false
+                                newSupplierName = supplierQuery.trim()
+                                newSupplierPhone = ""
+                                newSupplierAddress = ""
+                                newSupplierGstin = ""
+                                showNewSupplierDialog = true
+                            }
+                        )
+
+                        if (filteredSuppliers.isNotEmpty()) {
+                            HorizontalDivider()
+                            filteredSuppliers.forEach { supp ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(supp.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                            val details = buildList {
+                                                if (supp.mobile.isNotEmpty()) add(supp.mobile)
+                                                if (supp.address.isNotEmpty()) add(supp.address)
+                                                if (supp.outstandingBalance > 0) add("Due: ${CurrencyUtils.formatInr(supp.outstandingBalance, false)}")
+                                            }.joinToString(" • ")
+                                            if (details.isNotEmpty()) {
+                                                Text(details, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedSupplier = supp
+                                        supplierQuery = supp.name
+                                        supplierPhone = supp.mobile
+                                        isSupplierDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
+            // Supplier Mobile & Invoice Ref
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -284,9 +528,11 @@ fun AddPurchaseSheetContent(
                         value = supplierPhone,
                         onValueChange = { supplierPhone = it },
                         label = { Text("Supplier Mobile") },
+                        placeholder = { Text("9876543210") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        shape = RoundedCornerShape(12.dp)
                     )
                     OutlinedTextField(
                         value = invoiceRef,
@@ -294,11 +540,13 @@ fun AddPurchaseSheetContent(
                         label = { Text("Bill / Invoice Ref") },
                         placeholder = { Text("SUP-882") },
                         modifier = Modifier.weight(1f),
-                        singleLine = true
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
                     )
                 }
             }
 
+            // Payment Method & Status
             item {
                 Text("Payment Method", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                 Row(
@@ -310,85 +558,326 @@ fun AddPurchaseSheetContent(
                     paymentMethods.forEach { method ->
                         FilterChip(
                             selected = method == paymentMethod,
-                            onClick = { paymentMethod = method },
+                            onClick = {
+                                paymentMethod = method
+                                if (method.contains("Credit", true)) {
+                                    paymentStatus = "UNPAID"
+                                }
+                            },
                             label = { Text(method) }
                         )
                     }
                 }
             }
 
+            // 2. Searchable Product Selector
             item {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 Text(
-                    text = "Select Products & Inward Quantities",
+                    text = "Add Inward Products (उत्पाद चुनें)",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 8.dp)
+                    color = MaterialTheme.colorScheme.primary
                 )
-            }
+                
+                Spacer(modifier = Modifier.height(6.dp))
 
-            items(products) { prod ->
-                val qty = selectedItems[prod.id] ?: 0.0
-                val cost = priceOverrides[prod.id] ?: prod.purchasePrice
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (qty > 0) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = productSearchQuery,
+                        onValueChange = {
+                            productSearchQuery = it
+                            isProductDropdownExpanded = true
+                        },
+                        label = { Text("Search & Select Product to Inward") },
+                        placeholder = { Text("Search Almonds, Kaju, Spices, SKU...") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { isProductDropdownExpanded = !isProductDropdownExpanded }) {
+                                Icon(
+                                    imageVector = if (isProductDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                                    contentDescription = "Toggle Products"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
                     )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1.2f)) {
-                            Text(text = prod.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                            Text(text = "Current: ${CurrencyUtils.formatQuantity(prod.currentStock, prod.unit)} • Cost: ₹$cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                        }
 
-                        OutlinedTextField(
-                            value = if (qty > 0) qty.toString() else "",
-                            onValueChange = {
-                                val parsed = it.toDoubleOrNull() ?: 0.0
-                                if (parsed > 0) {
-                                    selectedItems[prod.id] = parsed
-                                } else {
-                                    selectedItems.remove(prod.id)
-                                }
-                            },
-                            label = { Text("+ Qty (${prod.unit})") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.width(130.dp),
-                            singleLine = true
-                        )
+                    DropdownMenu(
+                        expanded = isProductDropdownExpanded,
+                        onDismissRequest = { isProductDropdownExpanded = false },
+                        modifier = Modifier.fillMaxWidth(0.9f)
+                    ) {
+                        if (filteredProducts.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No matching products found", color = MaterialTheme.colorScheme.outline) },
+                                onClick = { }
+                            )
+                        } else {
+                            filteredProducts.forEach { prod ->
+                                val isLoose = prod.unit.equals("KG", true) || prod.unit.equals("Kilogram", true) || prod.unit.equals("Gram", true)
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(prod.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                                Text(
+                                                    text = "${if (prod.hindiName.isNotEmpty()) "${prod.hindiName} • " else ""}Stock: ${CurrencyUtils.formatQuantity(prod.currentStock, prod.unit)} • Cost: ₹${prod.purchasePrice}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.outline
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = if (isLoose) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
+                                            ) {
+                                                Text(
+                                                    text = prod.unit,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        activeProductToAdd = prod
+                                        itemQtyInput = if (isLoose) "10" else "5"
+                                        itemCostInput = if (prod.purchasePrice > 0) prod.purchasePrice.toString() else ""
+                                        productSearchQuery = ""
+                                        isProductDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
 
+            // Inward Item Adder Box (When a product is selected from the dropdown)
+            if (activeProductToAdd != null) {
+                val prod = activeProductToAdd!!
+                val isLoose = prod.unit.equals("KG", true) || prod.unit.equals("Kilogram", true) || prod.unit.equals("Gram", true)
+
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "Add: ${prod.name}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "Current Stock: ${CurrencyUtils.formatQuantity(prod.currentStock, prod.unit)} • Category: ${prod.category}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { activeProductToAdd = null },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel add item", modifier = Modifier.size(16.dp))
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = itemQtyInput,
+                                    onValueChange = { itemQtyInput = it },
+                                    label = { Text("Inward Qty (${prod.unit}) *") },
+                                    placeholder = { Text(if (isLoose) "e.g. 25.5" else "e.g. 10") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    value = itemCostInput,
+                                    onValueChange = { itemCostInput = it },
+                                    label = { Text("Cost Price (₹ per ${prod.unit})") },
+                                    placeholder = { Text("₹${prod.purchasePrice}") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                            }
+
+                            val calculatedQty = itemQtyInput.toDoubleOrNull() ?: 0.0
+                            val calculatedCost = itemCostInput.toDoubleOrNull() ?: prod.purchasePrice
+                            val itemSubtotal = calculatedQty * calculatedCost
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Inward Value: ${CurrencyUtils.formatInr(itemSubtotal)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Button(
+                                    onClick = {
+                                        if (calculatedQty > 0) {
+                                            selectedItems[prod.id] = prod to calculatedQty
+                                            if (calculatedCost > 0) {
+                                                priceOverrides[prod.id] = calculatedCost
+                                            }
+                                            activeProductToAdd = null
+                                        }
+                                    },
+                                    enabled = calculatedQty > 0,
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Add to Inward List")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Selected Items List
+            if (selectedItems.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "Inward Batch Items (${selectedItems.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                items(selectedItems.values.toList()) { (prod, qty) ->
+                    val cost = priceOverrides[prod.id] ?: prod.purchasePrice
+                    val itemTotal = qty * cost
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = prod.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "${CurrencyUtils.formatQuantity(qty, prod.unit)} @ ₹$cost / ${prod.unit}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = CurrencyUtils.formatInr(itemTotal),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = GeometricPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                IconButton(
+                                    onClick = {
+                                        selectedItems.remove(prod.id)
+                                        priceOverrides.remove(prod.id)
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Remove", tint = ErrorRed, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Notes
             item {
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("Notes / Batch Details") },
-                    modifier = Modifier.fillMaxWidth()
+                    label = { Text("Notes / Batch Details / Truck No.") },
+                    placeholder = { Text("e.g. 5 bags 2026 crop, standard packing") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        val totalProcuredProducts = selectedItems.size
+        // Total Procurement Bill Summary
+        val totalInwardAmount = selectedItems.values.sumOf { (prod, qty) ->
+            val cost = priceOverrides[prod.id] ?: prod.purchasePrice
+            qty * cost
+        }
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Total Inward (${selectedItems.size} items):",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = CurrencyUtils.formatInr(totalInwardAmount),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = GeometricPrimary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Save Button with Double-Click Prevention and Loading Indicator
         Button(
             onClick = {
-                if (supplierName.isNotBlank() && selectedItems.isNotEmpty()) {
-                    val itemList = selectedItems.mapNotNull { (prodId, qty) ->
-                        val product = products.find { it.id == prodId }
-                        if (product != null) product to qty else null
-                    }
+                val supplierFinalName = supplierQuery.trim()
+                if (supplierFinalName.isNotBlank() && selectedItems.isNotEmpty() && !isSavingPurchase) {
+                    isSavingPurchase = true
+                    val itemList = selectedItems.values.toList()
                     onSave(
-                        supplierName.trim(),
+                        supplierFinalName,
                         supplierPhone.trim(),
                         invoiceRef.trim(),
                         paymentMethod,
@@ -396,17 +885,33 @@ fun AddPurchaseSheetContent(
                         notes.trim(),
                         itemList,
                         priceOverrides.toMap()
-                    )
+                    ) {
+                        isSavingPurchase = false
+                    }
                 }
             },
-            enabled = supplierName.isNotBlank() && selectedItems.isNotEmpty(),
+            enabled = supplierQuery.isNotBlank() && selectedItems.isNotEmpty() && !isSavingPurchase,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .height(52.dp)
                 .testTag("save_purchase_submit_btn"),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = GeometricPrimary)
         ) {
-            Text("Save Stock Inward ($totalProcuredProducts items)", fontWeight = FontWeight.Bold)
+            if (isSavingPurchase) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Recording Stock Inward...", fontWeight = FontWeight.Bold)
+            } else {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Save Stock Inward (${selectedItems.size} items • ${CurrencyUtils.formatInr(totalInwardAmount)})", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
+

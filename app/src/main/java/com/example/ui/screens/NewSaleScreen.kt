@@ -63,6 +63,7 @@ fun NewSaleScreen(
     var showQuickCustomerDialog by remember { mutableStateOf(false) }
     var showNegativeStockWarning by remember { mutableStateOf(false) }
     var negativeStockProductName by remember { mutableStateOf("") }
+    var isCheckingOut by remember { mutableStateOf(false) }
 
     val subtotal = cartItems.sumOf { it.itemSubtotal }
     val taxRate = shopProfile?.taxRatePercent ?: 0.0
@@ -160,19 +161,21 @@ fun NewSaleScreen(
 
                     Button(
                         onClick = {
-                            if (cartItems.isEmpty()) return@Button
+                            if (cartItems.isEmpty() || isCheckingOut) return@Button
                             // Check stock
                             val outOfStockItem = cartItems.firstOrNull { it.quantity > it.product.currentStock }
                             if (outOfStockItem != null && !(shopProfile?.negativeStockAllowed ?: false)) {
                                 negativeStockProductName = "${outOfStockItem.product.name} (In stock: ${outOfStockItem.product.currentStock}, Selling: ${outOfStockItem.quantity})"
                                 showNegativeStockWarning = true
                             } else {
+                                isCheckingOut = true
                                 viewModel.checkoutSale { saleId, _ ->
+                                    isCheckingOut = false
                                     onInvoiceCreated(saleId)
                                 }
                             }
                         },
-                        enabled = cartItems.isNotEmpty(),
+                        enabled = cartItems.isNotEmpty() && !isCheckingOut,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
@@ -182,13 +185,27 @@ fun NewSaleScreen(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
-                        Icon(Icons.Default.Receipt, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Save & Generate Invoice (बिल बनाएं)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        if (isCheckingOut) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Generating Invoice...",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Icon(Icons.Default.Receipt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Save & Generate Invoice (बिल बनाएं)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

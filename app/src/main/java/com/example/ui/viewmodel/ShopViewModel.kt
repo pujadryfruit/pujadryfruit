@@ -69,7 +69,8 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val shopRepo = ShopRepository(db.shopDao())
     val productRepo = ProductRepository(db.productDao(), db.stockAuditDao())
     val salesRepo = SalesRepository(db, db.saleDao(), db.productDao(), db.customerDao(), db.stockAuditDao(), db.shopDao())
-    val purchaseRepo = PurchaseRepository(db, db.purchaseDao(), db.productDao(), db.stockAuditDao())
+    val supplierRepo = SupplierRepository(db.supplierDao())
+    val purchaseRepo = PurchaseRepository(db, db.purchaseDao(), db.productDao(), db.supplierDao(), db.stockAuditDao())
     val customerRepo = CustomerRepository(db.customerDao(), db.creditPaymentDao())
     val expenseRepo = ExpenseRepository(db.expenseDao())
     val stockAuditDao = db.stockAuditDao()
@@ -88,9 +89,20 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         FirebaseManager.initialize(application)
-        syncRepo.startRealtimeListeners()
         viewModelScope.launch {
-            syncRepo.performFullCloudSync()
+            authState.collect { state ->
+                when (state) {
+                    is FirebaseAuthService.AuthState.Authenticated -> {
+                        val uid = state.user?.uid ?: state.userDoc.id
+                        FirebaseManager.currentUserId = uid
+                        syncRepo.startRealtimeListeners()
+                        syncRepo.performFullCloudSync()
+                    }
+                    else -> {
+                        syncRepo.stopRealtimeListeners()
+                    }
+                }
+            }
         }
     }
 
@@ -216,8 +228,11 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             expenseRepo.getExpensesByCategory(dateRange.startTimestamp, dateRange.endTimestamp)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // 7. Purchases
+    // 7. Purchases & Suppliers
     val allPurchases: StateFlow<List<PurchaseEntity>> = purchaseRepo.allPurchases
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allSuppliers: StateFlow<List<SupplierEntity>> = supplierRepo.allSuppliers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // 8. New Sale / POS Cart State
@@ -483,24 +498,59 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Product & Inventory Operations ---
-    fun addProduct(product: ProductEntity) {
+    fun addProduct(product: ProductEntity, onComplete: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
-            val id = productRepo.addProduct(product)
-            val productWithId = if (product.id == 0L) product.copy(id = id) else product
+            val trimmedName = product.name.trim()
+            val trimmedSku = product.sku.trim()
+
+            // Check if product already exists (by SKU or Name) to prevent duplicate creation
+            val existing = if (trimmedSku.isNotBlank()) {
+                productRepo.getProductBySku(trimmedSku)
+            } else {
+                productRepo.getProductByName(trimmedName)
+            }
+
+            if (existing != null && !existing.isArchived) {
+                val updated = existing.copy(
+                    name = trimmedName,
+                    hindiName = product.hindiName.trim(),
+                    category = product.category,
+                    unit = product.unit,
+                    purchasePrice = product.purchasePrice,
+                    sellingPrice = product.sellingPrice,
+                    currentStock = product.currentStock,
+                    minStockLevel = product.minStockLevel,
+                    supplierName = product.supplierName.trim(),
+                    description = product.description.trim(),
+                    updatedAt = System.currentTimeMillis()
+                )
+                productRepo.updateProduct(updated)
+                _uiEventMessage.emit("Updated product ${product.name}")
+                launch {
+                    syncRepo.syncProductToCloud(updated)
+                }
+                onComplete?.invoke(true)
+                return@launch
+            }
+
+            val id = productRepo.addProduct(product.copy(name = trimmedName, sku = trimmedSku))
+            val productWithId = product.copy(id = id, name = trimmedName, sku = trimmedSku)
             _uiEventMessage.emit("Added ${product.name} to inventory")
             launch {
                 syncRepo.syncProductToCloud(productWithId)
             }
+            onComplete?.invoke(true)
         }
     }
 
-    fun updateProduct(product: ProductEntity) {
+    fun updateProduct(product: ProductEntity, onComplete: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
             productRepo.updateProduct(product)
             _uiEventMessage.emit("Updated ${product.name}")
             launch {
                 syncRepo.syncProductToCloud(product)
             }
+            onComplete?.invoke(true)
         }
     }
 
@@ -537,6 +587,39 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- Supplier Operations ---
+    fun addSupplier(supplier: SupplierEntity, onComplete: ((SupplierEntity) -> Unit)? = null) {
+        viewModelScope.launch {
+            val trimmedName = supplier.name.trim()
+            val trimmedMobile = supplier.mobile.trim()
+            val existing = if (trimmedName.isNotBlank()) supplierRepo.getSupplierByName(trimmedName) else null
+
+            if (existing != null) {
+                val updated = existing.copy(
+                    mobile = if (trimmedMobile.isNotBlank()) trimmedMobile else existing.mobile,
+                    address = if (supplier.address.isNotBlank()) supplier.address.trim() else existing.address,
+                    gstin = if (supplier.gstin.isNotBlank()) supplier.gstin.trim() else existing.gstin,
+                    contactPerson = if (supplier.contactPerson.isNotBlank()) supplier.contactPerson.trim() else existing.contactPerson,
+                    updatedAt = System.currentTimeMillis()
+                )
+                supplierRepo.updateSupplier(updated)
+                launch { syncRepo.syncSupplierToCloud(updated) }
+                _uiEventMessage.emit("Supplier $trimmedName selected")
+                onComplete?.invoke(updated)
+                return@launch
+            }
+
+            val newSupp = supplier.copy(name = trimmedName, mobile = trimmedMobile)
+            val id = supplierRepo.addSupplier(newSupp)
+            val savedSupp = newSupp.copy(id = id)
+            _uiEventMessage.emit("New supplier $trimmedName added")
+            launch {
+                syncRepo.syncSupplierToCloud(savedSupp)
+            }
+            onComplete?.invoke(savedSupp)
+        }
+    }
+
     // --- Purchase Operations ---
     fun recordPurchase(
         supplierName: String,
@@ -546,7 +629,8 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         paymentStatus: String,
         notes: String,
         items: List<Pair<ProductEntity, Double>>, // Product and quantity
-        priceOverrides: Map<Long, Double> = emptyMap() // Product ID to purchase price per unit
+        priceOverrides: Map<Long, Double> = emptyMap(), // Product ID to purchase price per unit
+        onComplete: ((Boolean) -> Unit)? = null
     ) {
         viewModelScope.launch {
             val purchaseItems = items.map { (prod, qty) ->
@@ -564,13 +648,13 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             val totalAmount = purchaseItems.sumOf { it.totalAmount }
 
             val purchase = PurchaseEntity(
-                supplierName = supplierName,
-                supplierPhone = supplierPhone,
-                invoiceReference = invoiceRef,
+                supplierName = supplierName.trim(),
+                supplierPhone = supplierPhone.trim(),
+                invoiceReference = invoiceRef.trim(),
                 totalAmount = totalAmount,
                 paymentStatus = paymentStatus,
                 paymentMethod = paymentMethod,
-                notes = notes
+                notes = notes.trim()
             )
             val purchaseId = purchaseRepo.createPurchase(purchase, purchaseItems)
             _uiEventMessage.emit("Stock inward of ${items.size} products recorded!")
@@ -579,23 +663,52 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             launch {
                 syncRepo.syncPurchaseToCloud(purchase.copy(id = purchaseId), purchaseItems)
             }
+            onComplete?.invoke(true)
         }
     }
 
     // --- Customer & Udhaar Operations ---
-    fun addCustomer(name: String, mobile: String, address: String) {
+    fun addCustomer(name: String, mobile: String, address: String, onComplete: ((CustomerEntity) -> Unit)? = null) {
         viewModelScope.launch {
+            val trimmedName = name.trim()
+            val trimmedMobile = mobile.trim()
+            val trimmedAddress = address.trim()
+
+            // Check if customer already exists by mobile or name to prevent duplicate creation
+            val existing = if (trimmedMobile.isNotBlank()) {
+                customerRepo.getCustomerByMobile(trimmedMobile)
+            } else {
+                customerRepo.getCustomerByName(trimmedName)
+            }
+
+            if (existing != null) {
+                val updated = existing.copy(
+                    name = trimmedName,
+                    mobile = trimmedMobile,
+                    address = if (trimmedAddress.isNotBlank()) trimmedAddress else existing.address,
+                    updatedAt = System.currentTimeMillis()
+                )
+                customerRepo.updateCustomer(updated)
+                _uiEventMessage.emit("Customer $trimmedName updated")
+                launch {
+                    syncRepo.syncCustomerToCloud(updated)
+                }
+                onComplete?.invoke(updated)
+                return@launch
+            }
+
             val customer = CustomerEntity(
-                name = name.trim(),
-                mobile = mobile.trim(),
-                address = address.trim()
+                name = trimmedName,
+                mobile = trimmedMobile,
+                address = trimmedAddress
             )
             val id = customerRepo.addCustomer(customer)
-            val custWithId = if (customer.id == 0L) customer.copy(id = id) else customer
-            _uiEventMessage.emit("Customer $name registered")
+            val custWithId = customer.copy(id = id)
+            _uiEventMessage.emit("Customer $trimmedName registered")
             launch {
                 syncRepo.syncCustomerToCloud(custWithId)
             }
+            onComplete?.invoke(custWithId)
         }
     }
 
@@ -715,6 +828,29 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             authService.enterOfflineAdmin()
             _uiEventMessage.emit("Entered as Owner / Admin")
+        }
+    }
+
+    fun adminRegisterStaffUser(
+        email: String,
+        pass: String,
+        name: String,
+        role: String = "STAFF / CASHIER",
+        phone: String = "",
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            _uiEventMessage.emit("Registering staff user: $name...")
+            val result = authService.adminRegisterNewUser(email, pass, name, role, phone)
+            if (result.isSuccess) {
+                val msg = "Staff user $name registered and authorized successfully!"
+                _uiEventMessage.emit(msg)
+                onResult(true, msg)
+            } else {
+                val err = result.exceptionOrNull()?.localizedMessage ?: "Failed to register user"
+                _uiEventMessage.emit("Registration failed: $err")
+                onResult(false, err)
+            }
         }
     }
 

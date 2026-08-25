@@ -267,12 +267,13 @@ fun ExpenseScreen(
         var amount by remember { mutableStateOf("") }
         var paymentMethod by remember { mutableStateOf("UPI") }
         var notes by remember { mutableStateOf("") }
+        var isSavingExpense by remember { mutableStateOf(false) }
 
         val expenseCategories = listOf("Shop Rent", "Staff Salary", "Packaging Boxes", "Electricity Bill", "Transport / Freight", "Tea & Refreshments", "Shop Maintenance", "Other")
 
         AlertDialog(
-            onDismissRequest = { showAddExpenseDialog = false },
-            title = { Text("Record Expense") },
+            onDismissRequest = { if (!isSavingExpense) showAddExpenseDialog = false },
+            title = { Text("Record Expense", fontWeight = FontWeight.Bold) },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -334,18 +335,23 @@ fun ExpenseScreen(
                 Button(
                     onClick = {
                         val parsedAmount = amount.toDoubleOrNull() ?: 0.0
-                        if (parsedAmount > 0 && description.isNotBlank()) {
+                        if (parsedAmount > 0 && description.isNotBlank() && !isSavingExpense) {
+                            isSavingExpense = true
                             viewModel.addExpense(category, description, parsedAmount, paymentMethod, notes)
                             showAddExpenseDialog = false
                         }
                     },
-                    enabled = amount.isNotBlank() && description.isNotBlank()
+                    enabled = amount.isNotBlank() && description.isNotBlank() && !isSavingExpense
                 ) {
+                    if (isSavingExpense) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text("Save Expense")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddExpenseDialog = false }) {
+                TextButton(onClick = { showAddExpenseDialog = false }, enabled = !isSavingExpense) {
                     Text("Cancel")
                 }
             }

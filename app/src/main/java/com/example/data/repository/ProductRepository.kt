@@ -28,6 +28,10 @@ class ProductRepository(
 
     suspend fun getProductById(id: Long): ProductEntity? = productDao.getProductById(id)
 
+    suspend fun getProductBySku(sku: String): ProductEntity? = if (sku.isNotBlank()) productDao.getProductBySku(sku.trim()) else null
+
+    suspend fun getProductByName(name: String): ProductEntity? = if (name.isNotBlank()) productDao.getProductByName(name.trim()) else null
+
     suspend fun addProduct(product: ProductEntity): Long {
         val id = productDao.insertProduct(product)
         if (product.currentStock > 0) {

@@ -62,8 +62,11 @@ class FirebaseAuthService(
                         FirebaseManager.currentUserId = user.uid
                         fetchOrCreateUserDoc(user)
                     } else {
-                        _currentUserDoc.value = null
-                        _authState.value = AuthState.Unauthenticated
+                        // Only transition to Unauthenticated if not currently in an Error state
+                        if (_authState.value !is AuthState.Error) {
+                            _currentUserDoc.value = null
+                            _authState.value = AuthState.Unauthenticated
+                        }
                     }
                 }
             } else {
@@ -138,8 +141,14 @@ class FirebaseAuthService(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-in failed: ${e.message}", e)
-            _authState.value = AuthState.Error(e.localizedMessage ?: "Sign-in failed")
-            Result.failure(e)
+            val friendlyMsg = if (e.message?.contains("user canceled", ignoreCase = true) == true ||
+                e.message?.contains("cancelled", ignoreCase = true) == true) {
+                "Google sign-in was cancelled"
+            } else {
+                e.localizedMessage ?: "Google Sign-in failed"
+            }
+            _authState.value = AuthState.Error(friendlyMsg)
+            Result.failure(Exception(friendlyMsg))
         }
     }
 
@@ -169,13 +178,14 @@ class FirebaseAuthService(
         } catch (e: Exception) {
             Log.e(TAG, "Email login error: ${e.message}", e)
             val friendlyMsg = when {
-                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please verify your credentials."
-                e.message?.contains("user", ignoreCase = true) == true ||
+                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please verify your credentials and try again."
+                e.message?.contains("user-not-found", ignoreCase = true) == true ||
+                e.message?.contains("no user record", ignoreCase = true) == true -> "Account not found for $trimmedEmail. Only Admin can create new staff accounts."
                 e.message?.contains("invalid-credential", ignoreCase = true) == true ||
-                e.message?.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) == true -> "Invalid credentials or account not registered. Only Admin can create new user accounts."
-                e.message?.contains("network", ignoreCase = true) == true -> "Network connection error. Please check your internet connection."
-                e.message?.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true) == true ||
-                e.message?.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) == true -> "Firebase Email Auth provider is not enabled in Firebase console."
+                e.message?.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) == true -> "Incorrect email or password. Please verify and try again."
+                e.message?.contains("network", ignoreCase = true) == true ||
+                e.message?.contains("timeout", ignoreCase = true) == true -> "Network connection error. Please check your internet connection or use Offline Admin."
+                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a moment or use Offline Admin."
                 else -> e.localizedMessage ?: "Login failed. Please verify credentials."
             }
             _authState.value = AuthState.Error(friendlyMsg)

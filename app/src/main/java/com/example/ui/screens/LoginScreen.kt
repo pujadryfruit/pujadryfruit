@@ -53,9 +53,7 @@ fun LoginScreen(
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
-    var isSignUpMode by remember { mutableStateOf(false) }
 
     var emailError by remember { mutableStateOf<String?>(null) }
     var passwordError by remember { mutableStateOf<String?>(null) }
@@ -84,8 +82,8 @@ fun LoginScreen(
         if (trimmedPass.isEmpty()) {
             passwordError = "Password is required"
             isValid = false
-        } else if (trimmedPass.length < 6) {
-            passwordError = "Password must be at least 6 characters"
+        } else if (trimmedPass.length < 4) {
+            passwordError = "Password is too short"
             isValid = false
         } else {
             passwordError = null
@@ -94,16 +92,11 @@ fun LoginScreen(
         return isValid
     }
 
-    fun handleLoginOrSignUp() {
+    fun handleLogin() {
         viewModel.clearAuthError()
         focusManager.clearFocus()
         if (!validateInputs()) return
-
-        if (isSignUpMode) {
-            viewModel.signUpWithEmail(email.trim(), password.trim(), displayName.trim())
-        } else {
-            viewModel.signInWithEmail(email.trim(), password.trim())
-        }
+        viewModel.signInWithEmail(email.trim(), password.trim())
     }
 
     // Forgot Password Dialog
@@ -247,7 +240,7 @@ fun LoginScreen(
             )
 
             Text(
-                text = "पूजा ड्राई फ्रूट्स • Admin & Shop Portal",
+                text = "पूजा ड्राई फ्रूट्स • Staff & Admin Login",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary,
@@ -258,7 +251,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = if (isSignUpMode) "Create an Owner / Admin Account" else "Sign in to access Puja Dry Fruits",
+                text = "Sign in to access billing, stock and ledger portal",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.outline,
                 textAlign = TextAlign.Center
@@ -282,32 +275,6 @@ fun LoginScreen(
                         .padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Sign-up Name Field (if in Sign Up Mode)
-                    AnimatedVisibility(
-                        visible = isSignUpMode,
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically()
-                    ) {
-                        OutlinedTextField(
-                            value = displayName,
-                            onValueChange = { displayName = it },
-                            label = { Text("Full Name") },
-                            placeholder = { Text("e.g. Rohit Kumar") },
-                            leadingIcon = {
-                                Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Text,
-                                imeAction = ImeAction.Next
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("name_input_field"),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                    }
-
                     // Email Field
                     OutlinedTextField(
                         value = email,
@@ -317,7 +284,7 @@ fun LoginScreen(
                             viewModel.clearAuthError()
                         },
                         label = { Text("Email Address") },
-                        placeholder = { Text("Enter your email") },
+                        placeholder = { Text("Enter your registered email") },
                         leadingIcon = {
                             Icon(Icons.Default.Email, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         },
@@ -374,7 +341,7 @@ fun LoginScreen(
                             keyboardType = KeyboardType.Password,
                             imeAction = ImeAction.Done
                         ),
-                        keyboardActions = KeyboardActions(onDone = { handleLoginOrSignUp() }),
+                        keyboardActions = KeyboardActions(onDone = { handleLogin() }),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("password_input_field"),
@@ -382,29 +349,27 @@ fun LoginScreen(
                     )
 
                     // Forgot Password Row
-                    if (!isSignUpMode) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                forgotEmail = email
+                                showForgotPasswordDialog = true
+                            },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
                         ) {
-                            TextButton(
-                                onClick = {
-                                    forgotEmail = email
-                                    showForgotPasswordDialog = true
-                                },
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "Forgot Password?",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
+                            Text(
+                                text = "Forgot Password?",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
 
-                    // Error Message Display
+                    // Error Message Display with Retry
                     if (authState is AuthState.Error) {
                         val errorMsg = (authState as AuthState.Error).message
                         Surface(
@@ -441,16 +406,22 @@ fun LoginScreen(
                                 ) {
                                     Button(
                                         onClick = {
-                                            isSignUpMode = true
+                                            viewModel.clearAuthError()
+                                            handleLogin()
                                         },
                                         modifier = Modifier.weight(1f),
                                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                                     ) {
-                                        Text("Register Now", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Try Again", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
                                     }
 
                                     OutlinedButton(
-                                        onClick = { viewModel.enterOfflineAdmin() },
+                                        onClick = {
+                                            viewModel.clearAuthError()
+                                            viewModel.enterOfflineAdmin()
+                                        },
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Text("Offline Admin", fontSize = 12.sp)
@@ -460,9 +431,9 @@ fun LoginScreen(
                         }
                     }
 
-                    // Main Login / Sign Up Button
+                    // Main Login Button
                     Button(
-                        onClick = { handleLoginOrSignUp() },
+                        onClick = { handleLogin() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
@@ -483,13 +454,13 @@ fun LoginScreen(
                             Text("Authenticating...", color = Color.White, fontWeight = FontWeight.Bold)
                         } else {
                             Icon(
-                                imageVector = if (isSignUpMode) Icons.Default.PersonAdd else Icons.Default.Login,
+                                imageVector = Icons.Default.Login,
                                 contentDescription = null,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isSignUpMode) "Register Account" else "Sign In to Shop",
+                                text = "Sign In to Shop",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -515,7 +486,10 @@ fun LoginScreen(
 
                     // Google Sign-In Button
                     OutlinedButton(
-                        onClick = { viewModel.signInWithGoogle(context) },
+                        onClick = {
+                            viewModel.clearAuthError()
+                            viewModel.signInWithGoogle(context)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
@@ -541,31 +515,12 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Toggle Login / Register
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(
-                    onClick = {
-                        isSignUpMode = !isSignUpMode
-                        emailError = null
-                        passwordError = null
-                    }
-                ) {
-                    Text(
-                        text = if (isSignUpMode) "Already have an account? Sign In" else "Don't have an account? Register / Sign Up",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
             // Direct offline bypass
             TextButton(
-                onClick = { viewModel.enterOfflineAdmin() }
+                onClick = {
+                    viewModel.clearAuthError()
+                    viewModel.enterOfflineAdmin()
+                }
             ) {
                 Text(
                     text = "Direct Admin Access (Offline Mode)",

@@ -18,13 +18,14 @@ import kotlinx.coroutines.launch
         PurchaseEntity::class,
         PurchaseItemEntity::class,
         CustomerEntity::class,
+        SupplierEntity::class,
         SaleEntity::class,
         SaleItemEntity::class,
         CreditPaymentEntity::class,
         ExpenseEntity::class,
         StockAuditEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,6 +34,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
     abstract fun purchaseDao(): PurchaseDao
     abstract fun customerDao(): CustomerDao
+    abstract fun supplierDao(): SupplierDao
     abstract fun saleDao(): SaleDao
     abstract fun expenseDao(): ExpenseDao
     abstract fun creditPaymentDao(): CreditPaymentDao

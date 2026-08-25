@@ -10,6 +10,7 @@ class PurchaseRepository(
     private val database: AppDatabase,
     private val purchaseDao: PurchaseDao,
     private val productDao: ProductDao,
+    private val supplierDao: SupplierDao,
     private val stockAuditDao: StockAuditDao
 ) {
     val allPurchases: Flow<List<PurchaseEntity>> = purchaseDao.getAllPurchases()
@@ -32,6 +33,22 @@ class PurchaseRepository(
             createdPurchaseId = purchaseDao.insertPurchase(purchase)
             val mappedItems = items.map { it.copy(purchaseId = createdPurchaseId) }
             purchaseDao.insertPurchaseItems(mappedItems)
+
+            // Update Supplier record
+            if (purchase.supplierName.isNotBlank()) {
+                val existingSupp = supplierDao.getSupplierByName(purchase.supplierName.trim())
+                if (existingSupp != null) {
+                    supplierDao.recordPurchase(existingSupp.id, purchase.totalAmount)
+                } else {
+                    val newSupp = SupplierEntity(
+                        name = purchase.supplierName.trim(),
+                        mobile = purchase.supplierPhone.trim(),
+                        totalPurchases = purchase.totalAmount,
+                        notes = "Auto-created from stock inward"
+                    )
+                    supplierDao.insertSupplier(newSupp)
+                }
+            }
 
             for (item in mappedItems) {
                 val product = productDao.getProductById(item.productId)
@@ -57,6 +74,42 @@ class PurchaseRepository(
     }
 }
 
+class SupplierRepository(
+    private val supplierDao: SupplierDao
+) {
+    val allSuppliers: Flow<List<SupplierEntity>> = supplierDao.getAllSuppliers()
+
+    fun searchSuppliers(query: String): Flow<List<SupplierEntity>> = supplierDao.searchSuppliers(query)
+
+    suspend fun getAllSuppliersSync(): List<SupplierEntity> = supplierDao.getAllSuppliersSync()
+
+    suspend fun getSupplierById(id: Long): SupplierEntity? = supplierDao.getSupplierById(id)
+
+    suspend fun getSupplierByName(name: String): SupplierEntity? = supplierDao.getSupplierByName(name.trim())
+
+    suspend fun getSupplierByMobile(mobile: String): SupplierEntity? = supplierDao.getSupplierByMobile(mobile.trim())
+
+    suspend fun addSupplier(supplier: SupplierEntity): Long {
+        val existing = if (supplier.name.isNotBlank()) supplierDao.getSupplierByName(supplier.name.trim()) else null
+        if (existing != null) {
+            val updated = existing.copy(
+                mobile = if (supplier.mobile.isNotBlank()) supplier.mobile.trim() else existing.mobile,
+                address = if (supplier.address.isNotBlank()) supplier.address.trim() else existing.address,
+                gstin = if (supplier.gstin.isNotBlank()) supplier.gstin.trim() else existing.gstin,
+                contactPerson = if (supplier.contactPerson.isNotBlank()) supplier.contactPerson.trim() else existing.contactPerson,
+                updatedAt = System.currentTimeMillis()
+            )
+            supplierDao.updateSupplier(updated)
+            return existing.id
+        }
+        return supplierDao.insertSupplier(supplier)
+    }
+
+    suspend fun updateSupplier(supplier: SupplierEntity) = supplierDao.updateSupplier(supplier)
+
+    suspend fun deleteSupplier(id: Long) = supplierDao.deleteSupplierById(id)
+}
+
 class CustomerRepository(
     private val customerDao: CustomerDao,
     private val creditPaymentDao: CreditPaymentDao
@@ -72,6 +125,10 @@ class CustomerRepository(
     fun getCustomerByIdFlow(id: Long): Flow<CustomerEntity?> = customerDao.getCustomerByIdFlow(id)
 
     suspend fun getCustomerById(id: Long): CustomerEntity? = customerDao.getCustomerById(id)
+
+    suspend fun getCustomerByMobile(mobile: String): CustomerEntity? = if (mobile.isNotBlank()) customerDao.getCustomerByMobile(mobile.trim()) else null
+
+    suspend fun getCustomerByName(name: String): CustomerEntity? = if (name.isNotBlank()) customerDao.getCustomerByName(name.trim()) else null
 
     suspend fun addCustomer(customer: CustomerEntity): Long = customerDao.insertCustomer(customer)
 

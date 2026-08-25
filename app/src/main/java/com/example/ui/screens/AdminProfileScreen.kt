@@ -74,6 +74,15 @@ fun AdminProfileScreen(
     var showNewPassword by remember { mutableStateOf(false) }
     var isUpdatingPassword by remember { mutableStateOf(false) }
 
+    // Register Staff State (Admin only)
+    var showRegisterStaffDialog by remember { mutableStateOf(false) }
+    var staffName by remember { mutableStateOf("") }
+    var staffEmail by remember { mutableStateOf("") }
+    var staffPassword by remember { mutableStateOf("") }
+    var staffPhone by remember { mutableStateOf("") }
+    var staffRole by remember { mutableStateOf("STAFF / CASHIER") }
+    var isRegisteringStaff by remember { mutableStateOf(false) }
+
     val formattedSyncTime = remember(lastSyncTime) {
         if (lastSyncTime > 0) {
             SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(lastSyncTime))
@@ -276,6 +285,117 @@ fun AdminProfileScreen(
                 TextButton(
                     onClick = { showChangePasswordDialog = false },
                     enabled = !isUpdatingPassword
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Register Staff / Operator Dialog (Admin Only)
+    if (showRegisterStaffDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isRegisteringStaff) showRegisterStaffDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.PersonAdd,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text("Register New Staff / User", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Create authorized login credentials for staff or store operator. Only Admin can create new accounts.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = staffName,
+                        onValueChange = { staffName = it },
+                        label = { Text("Staff Full Name") },
+                        placeholder = { Text("e.g. Rahul Sharma") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = staffEmail,
+                        onValueChange = { staffEmail = it },
+                        label = { Text("Staff Login Email") },
+                        placeholder = { Text("e.g. rahul@pujadryfruits.com") },
+                        leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = staffPassword,
+                        onValueChange = { staffPassword = it },
+                        label = { Text("Initial Password") },
+                        placeholder = { Text("At least 6 characters") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = staffPhone,
+                        onValueChange = { staffPhone = it },
+                        label = { Text("Phone Number (Optional)") },
+                        placeholder = { Text("+91 98765 00000") },
+                        leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (staffName.trim().isEmpty() || staffEmail.trim().isEmpty() || staffPassword.trim().isEmpty()) {
+                            Toast.makeText(context, "Please fill in all required fields", Toast.LENGTH_SHORT).show()
+                        } else if (staffPassword.trim().length < 6) {
+                            Toast.makeText(context, "Password must be at least 6 characters", Toast.LENGTH_SHORT).show()
+                        } else {
+                            isRegisteringStaff = true
+                            viewModel.adminRegisterStaffUser(
+                                email = staffEmail.trim(),
+                                pass = staffPassword.trim(),
+                                name = staffName.trim(),
+                                role = staffRole,
+                                phone = staffPhone.trim()
+                            ) { success, msg ->
+                                isRegisteringStaff = false
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                if (success) {
+                                    showRegisterStaffDialog = false
+                                    staffName = ""
+                                    staffEmail = ""
+                                    staffPassword = ""
+                                    staffPhone = ""
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isRegisteringStaff && staffName.isNotEmpty() && staffEmail.isNotEmpty() && staffPassword.isNotEmpty()
+                ) {
+                    if (isRegisteringStaff) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text("Register Account")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRegisterStaffDialog = false },
+                    enabled = !isRegisteringStaff
                 ) {
                     Text("Cancel")
                 }
@@ -586,6 +706,49 @@ fun AdminProfileScreen(
                         )
                         Text(
                             text = "Update your account login password",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+                }
+            }
+
+            // Register New Staff / User Button (Admin Only)
+            OutlinedCard(
+                onClick = { showRegisterStaffDialog = true },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.PersonAdd,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Add / Register Staff User",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Create new login credentials for staff (Admin only)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.outline
                         )

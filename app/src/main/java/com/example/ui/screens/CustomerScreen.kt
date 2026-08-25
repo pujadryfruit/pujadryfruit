@@ -186,17 +186,16 @@ fun CustomerScreen(
                 }
             }
         }
-    }
-
-    // Add Customer Dialog
+    }    // Add Customer Dialog
     if (showAddCustomerDialog) {
         var name by remember { mutableStateOf("") }
         var mobile by remember { mutableStateOf("") }
         var address by remember { mutableStateOf("") }
+        var isSavingCustomer by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showAddCustomerDialog = false },
-            title = { Text("Add Customer") },
+            onDismissRequest = { if (!isSavingCustomer) showAddCustomerDialog = false },
+            title = { Text("Add New Customer") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -230,18 +229,23 @@ fun CustomerScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (name.isNotBlank()) {
+                        if (name.isNotBlank() && !isSavingCustomer) {
+                            isSavingCustomer = true
                             viewModel.addCustomer(name, mobile, address)
                             showAddCustomerDialog = false
                         }
                     },
-                    enabled = name.isNotBlank()
+                    enabled = name.isNotBlank() && !isSavingCustomer
                 ) {
+                    if (isSavingCustomer) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text("Save Customer")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddCustomerDialog = false }) {
+                TextButton(onClick = { showAddCustomerDialog = false }, enabled = !isSavingCustomer) {
                     Text("Cancel")
                 }
             }
@@ -254,9 +258,10 @@ fun CustomerScreen(
         var repayAmount by remember { mutableStateOf(cust.outstandingBalance.toString()) }
         var repayMode by remember { mutableStateOf("Cash") }
         var repayNote by remember { mutableStateOf("Payment received towards pending bill") }
+        var isSavingRepayment by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showRepayDialog = false },
+            onDismissRequest = { if (!isSavingRepayment) showRepayDialog = false },
             title = { Text("Receive Udhaar Payment") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -298,18 +303,24 @@ fun CustomerScreen(
                 Button(
                     onClick = {
                         val amt = repayAmount.toDoubleOrNull() ?: 0.0
-                        if (amt > 0) {
+                        if (amt > 0 && !isSavingRepayment) {
+                            isSavingRepayment = true
                             viewModel.recordUdhaarRepayment(cust.id, amt, repayMode, repayNote)
                             showRepayDialog = false
                         }
                     },
+                    enabled = !isSavingRepayment,
                     colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
                 ) {
+                    if (isSavingRepayment) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text("Confirm Receipt")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showRepayDialog = false }) {
+                TextButton(onClick = { showRepayDialog = false }, enabled = !isSavingRepayment) {
                     Text("Cancel")
                 }
             }

@@ -262,13 +262,18 @@ fun InventoryScreen(
         ) {
             AddEditProductSheetContent(
                 product = editingProduct,
-                onSave = { savedProduct ->
+                onSave = { savedProduct, onFinished ->
                     if (editingProduct != null) {
-                        viewModel.updateProduct(savedProduct)
+                        viewModel.updateProduct(savedProduct) {
+                            onFinished()
+                            showAddEditSheet = false
+                        }
                     } else {
-                        viewModel.addProduct(savedProduct)
+                        viewModel.addProduct(savedProduct) {
+                            onFinished()
+                            showAddEditSheet = false
+                        }
                     }
-                    showAddEditSheet = false
                 },
                 onCancel = { showAddEditSheet = false }
             )
@@ -521,28 +526,56 @@ fun ProductItemCard(
 @Composable
 fun AddEditProductSheetContent(
     product: ProductEntity?,
-    onSave: (ProductEntity) -> Unit,
+    onSave: (ProductEntity, onFinished: () -> Unit) -> Unit,
     onCancel: () -> Unit
 ) {
+    // Determine initial product type: LOOSE (KG/Gram) or PACKET (PCS/Packet/Box)
+    val initialIsLoose = product?.let {
+        it.unit.equals("Kilogram", ignoreCase = true) ||
+        it.unit.equals("KG", ignoreCase = true) ||
+        it.unit.equals("Gram", ignoreCase = true) ||
+        it.unit.equals("Gm", ignoreCase = true)
+    } ?: true
+
+    var productType by remember { mutableStateOf(if (initialIsLoose) "LOOSE" else "PACKET") } // "LOOSE" or "PACKET"
     var name by remember { mutableStateOf(product?.name ?: "") }
     var hindiName by remember { mutableStateOf(product?.hindiName ?: "") }
     var sku by remember { mutableStateOf(product?.sku ?: "") }
-    var category by remember { mutableStateOf(product?.category ?: "Nuts") }
-    var unit by remember { mutableStateOf(product?.unit ?: "Kilogram") }
+    var category by remember { mutableStateOf(product?.category ?: "Dry Fruits") }
+
+    val looseUnits = listOf("KG", "Gram")
+    val packetUnits = listOf("PCS", "Packet", "Box")
+
+    var selectedUnit by remember {
+        mutableStateOf(
+            product?.unit?.let { u ->
+                when {
+                    u.equals("Kilogram", true) -> "KG"
+                    u.equals("KG", true) -> "KG"
+                    u.equals("Gram", true) || u.equals("Gm", true) -> "Gram"
+                    u.equals("Piece", true) || u.equals("PCS", true) -> "PCS"
+                    u.equals("Packet", true) -> "Packet"
+                    u.equals("Box", true) -> "Box"
+                    else -> u
+                }
+            } ?: (if (initialIsLoose) "KG" else "PCS")
+        )
+    }
+
     var purchasePrice by remember { mutableStateOf(if (product != null && product.purchasePrice > 0) product.purchasePrice.toString() else "") }
     var sellingPrice by remember { mutableStateOf(if (product != null && product.sellingPrice > 0) product.sellingPrice.toString() else "") }
-    var currentStock by remember { mutableStateOf(if (product != null) product.currentStock.toString() else "10.0") }
-    var minStock by remember { mutableStateOf(if (product != null) product.minStockLevel.toString() else "5.0") }
+    var currentStock by remember { mutableStateOf(if (product != null) product.currentStock.toString() else "10") }
+    var minStock by remember { mutableStateOf(if (product != null) product.minStockLevel.toString() else "5") }
     var supplier by remember { mutableStateOf(product?.supplierName ?: "") }
     var description by remember { mutableStateOf(product?.description ?: "") }
+    var isSaving by remember { mutableStateOf(false) }
 
-    val categories = listOf("Nuts", "Dry Fruits", "Seeds", "Berries", "Gift Boxes", "Combos")
-    val units = listOf("Kilogram", "Gram", "Piece", "Packet", "Box")
+    val categories = listOf("Dry Fruits", "Nuts", "Spices / Masala", "Seeds", "Berries", "Gift Boxes", "Combos")
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(0.9f)
+            .fillMaxHeight(0.92f)
             .padding(20.dp)
     ) {
         Row(
@@ -550,12 +583,19 @@ fun AddEditProductSheetContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (product == null) "Add New Dry Fruit" else "Edit Dry Fruit",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            IconButton(onClick = onCancel) {
+            Column {
+                Text(
+                    text = if (product == null) "Add New Product" else "Edit Product",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Loose (KG/Gram) or Packaged (PCS/Packet)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            IconButton(onClick = onCancel, enabled = !isSaving) {
                 Icon(Icons.Default.Close, contentDescription = "Close")
             }
         }
@@ -564,14 +604,94 @@ fun AddEditProductSheetContent(
 
         LazyColumn(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // 1. Product Type Selector (Loose vs Packaged)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "PRODUCT TYPE (प्रकार)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                onClick = {
+                                    productType = "LOOSE"
+                                    if (selectedUnit !in looseUnits) selectedUnit = "KG"
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (productType == "LOOSE") GeometricPrimary else MaterialTheme.colorScheme.surface,
+                                contentColor = if (productType == "LOOSE") Color.White else MaterialTheme.colorScheme.onSurface,
+                                border = if (productType == "LOOSE") null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(Icons.Default.Scale, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "LOOSE (खुला माल)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                onClick = {
+                                    productType = "PACKET"
+                                    if (selectedUnit !in packetUnits) selectedUnit = "PCS"
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (productType == "PACKET") GeometricPrimary else MaterialTheme.colorScheme.surface,
+                                contentColor = if (productType == "PACKET") Color.White else MaterialTheme.colorScheme.onSurface,
+                                border = if (productType == "PACKET") null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "PACKET (पैकेट/पीस)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Product Name & Hindi Name
             item {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Product Name *") },
-                    placeholder = { Text("e.g. California Almonds (Badam)") },
+                    placeholder = {
+                        Text(if (productType == "LOOSE") "e.g. California Almonds (Badam) / Jeera" else "e.g. Haldiram Bhujia 500g Pack")
+                    },
                     modifier = Modifier.fillMaxWidth().testTag("product_name_input"),
                     singleLine = true
                 )
@@ -582,35 +702,13 @@ fun AddEditProductSheetContent(
                     value = hindiName,
                     onValueChange = { hindiName = it },
                     label = { Text("Hindi Name (Optional)") },
-                    placeholder = { Text("e.g. बादाम / काजू / पिस्ता") },
+                    placeholder = { Text("e.g. बादाम / काजू / पिस्ता / जीरा / मसाला") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
             }
 
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = sku,
-                        onValueChange = { sku = it },
-                        label = { Text("SKU / Code") },
-                        placeholder = { Text("DF-ALM-01") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = supplier,
-                        onValueChange = { supplier = it },
-                        label = { Text("Supplier Name") },
-                        modifier = Modifier.weight(1.2f),
-                        singleLine = true
-                    )
-                }
-            }
-
+            // 3. Category & Unit Selection
             item {
                 Text("Category", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                 Row(
@@ -630,23 +728,54 @@ fun AddEditProductSheetContent(
             }
 
             item {
-                Text("Unit of Measurement", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (productType == "LOOSE") "Unit (LOOSE → KG / GRAM)" else "Unit (PACKET → PCS / PACKET / BOX)",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    units.forEach { u ->
+                    val availableUnits = if (productType == "LOOSE") looseUnits else packetUnits
+                    availableUnits.forEach { u ->
                         FilterChip(
-                            selected = u == unit,
-                            onClick = { unit = u },
-                            label = { Text(u) }
+                            selected = u == selectedUnit,
+                            onClick = { selectedUnit = u },
+                            label = { Text(u, fontWeight = FontWeight.Bold) },
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
 
+            // 4. SKU & Supplier
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = sku,
+                        onValueChange = { sku = it },
+                        label = { Text("SKU / Code") },
+                        placeholder = { Text(if (productType == "LOOSE") "DF-ALM-KG" else "PK-ALM-500G") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = supplier,
+                        onValueChange = { supplier = it },
+                        label = { Text("Supplier Name") },
+                        placeholder = { Text("e.g. Sharma Traders") },
+                        modifier = Modifier.weight(1.2f),
+                        singleLine = true
+                    )
+                }
+            }
+
+            // 5. Cost & Selling Price
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -655,7 +784,7 @@ fun AddEditProductSheetContent(
                     OutlinedTextField(
                         value = purchasePrice,
                         onValueChange = { purchasePrice = it },
-                        label = { Text("Cost Price (₹)") },
+                        label = { Text("Cost Price (₹ per $selectedUnit)") },
                         placeholder = { Text("750.00") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f).testTag("product_cost_price_input"),
@@ -664,7 +793,7 @@ fun AddEditProductSheetContent(
                     OutlinedTextField(
                         value = sellingPrice,
                         onValueChange = { sellingPrice = it },
-                        label = { Text("Selling Price (₹)") },
+                        label = { Text("Selling Price (₹ per $selectedUnit)") },
                         placeholder = { Text("950.00") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f).testTag("product_selling_price_input"),
@@ -673,6 +802,7 @@ fun AddEditProductSheetContent(
                 }
             }
 
+            // 6. Stock Quantity & Min Stock Alert
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -681,7 +811,12 @@ fun AddEditProductSheetContent(
                     OutlinedTextField(
                         value = currentStock,
                         onValueChange = { currentStock = it },
-                        label = { Text("Initial Stock") },
+                        label = {
+                            Text(
+                                if (productType == "LOOSE") "Initial Stock (in $selectedUnit, e.g. 10.5)"
+                                else "Initial Stock (Qty in $selectedUnit)"
+                            )
+                        },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f),
                         singleLine = true
@@ -689,7 +824,7 @@ fun AddEditProductSheetContent(
                     OutlinedTextField(
                         value = minStock,
                         onValueChange = { minStock = it },
-                        label = { Text("Min Stock Alert") },
+                        label = { Text("Min Stock Alert ($selectedUnit)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f),
                         singleLine = true
@@ -697,12 +832,13 @@ fun AddEditProductSheetContent(
                 }
             }
 
+            // 7. Description
             item {
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
                     label = { Text("Description & Grade Notes") },
-                    placeholder = { Text("e.g. Jumbo sweet grade, vacuum packed") },
+                    placeholder = { Text("e.g. Jumbo sweet grade, vacuum packed, 100% pure") },
                     modifier = Modifier.fillMaxWidth(),
                     maxLines = 3
                 )
@@ -711,20 +847,22 @@ fun AddEditProductSheetContent(
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // Save Button with Double-Click Prevention and Progress Indicator
         Button(
             onClick = {
-                if (name.isNotBlank()) {
+                if (name.isNotBlank() && !isSaving) {
+                    isSaving = true
                     val pPrice = purchasePrice.toDoubleOrNull() ?: 0.0
                     val sPrice = sellingPrice.toDoubleOrNull() ?: 0.0
                     val cStock = currentStock.toDoubleOrNull() ?: 0.0
                     val mStock = minStock.toDoubleOrNull() ?: 5.0
 
-                    val newProduct = (product ?: ProductEntity(name = name)).copy(
+                    val newProduct = (product ?: ProductEntity(name = name.trim())).copy(
                         name = name.trim(),
                         hindiName = hindiName.trim(),
                         sku = sku.trim(),
                         category = category,
-                        unit = unit,
+                        unit = selectedUnit,
                         purchasePrice = pPrice,
                         sellingPrice = sPrice,
                         currentStock = cStock,
@@ -733,17 +871,35 @@ fun AddEditProductSheetContent(
                         description = description.trim(),
                         updatedAt = System.currentTimeMillis()
                     )
-                    onSave(newProduct)
+                    onSave(newProduct) {
+                        isSaving = false
+                    }
                 }
             },
-            enabled = name.isNotBlank(),
+            enabled = name.isNotBlank() && !isSaving,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .height(52.dp)
                 .testTag("save_product_submit_btn"),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = GeometricPrimary)
         ) {
-            Text("Save Dry Fruit Product", fontWeight = FontWeight.Bold)
+            if (isSaving) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Saving to Catalog...", fontWeight = FontWeight.Bold)
+            } else {
+                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (product == null) "Save Product to Catalog" else "Update Product Details",
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

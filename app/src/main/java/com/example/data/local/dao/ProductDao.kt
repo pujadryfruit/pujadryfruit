@@ -21,6 +21,12 @@ interface ProductDao {
     @Query("SELECT * FROM products WHERE id = :id")
     suspend fun getProductById(id: Long): ProductEntity?
 
+    @Query("SELECT * FROM products WHERE sku = :sku AND isArchived = 0 LIMIT 1")
+    suspend fun getProductBySku(sku: String): ProductEntity?
+
+    @Query("SELECT * FROM products WHERE LOWER(name) = LOWER(:name) AND isArchived = 0 LIMIT 1")
+    suspend fun getProductByName(name: String): ProductEntity?
+
     @Query("SELECT * FROM products WHERE id = :id")
     fun getProductByIdFlow(id: Long): Flow<ProductEntity?>
 

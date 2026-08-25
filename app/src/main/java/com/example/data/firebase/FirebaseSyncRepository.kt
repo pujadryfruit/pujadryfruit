@@ -44,11 +44,12 @@ class FirebaseSyncRepository(
 
     private var productListener: ListenerRegistration? = null
     private var customerListener: ListenerRegistration? = null
+    private var supplierListener: ListenerRegistration? = null
     private var expenseListener: ListenerRegistration? = null
 
     /**
-     * Initializes real-time listener for products, customers & expenses from Firestore to local Room.
-     * Uses efficient snapshot listeners restricted by shopId.
+     * Initializes real-time listener for products, customers, suppliers & expenses from Firestore to local Room.
+     * Uses efficient snapshot listeners restricted by shopId and prevents duplicate row creation.
      */
     fun startRealtimeListeners(shopId: String = FirebaseManager.currentShopId) {
         stopRealtimeListeners()
@@ -57,11 +58,20 @@ class FirebaseSyncRepository(
                 Log.d(TAG, "Firestore not available for real-time listeners; running offline mode.")
                 return
             }
+            if (FirebaseManager.auth?.currentUser == null) {
+                Log.d(TAG, "Cloud sync listeners deferred: Local offline mode.")
+                return
+            }
             productListener = firestore.collection("products")
                 .whereEqualTo("shopId", shopId)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.w(TAG, "Product listener error: ${error.message}")
+                        if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.d(TAG, "Product cloud listener: Auth required, running in local mode")
+                            stopRealtimeListeners()
+                        } else {
+                            Log.w(TAG, "Product listener error: ${error.message}")
+                        }
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
@@ -70,20 +80,27 @@ class FirebaseSyncRepository(
                                 val doc = change.document.toObject(ProductDoc::class.java)
                                 val docId = change.document.id
                                 val parsedId = docId.substringAfterLast("_prod_", "").toLongOrNull()
+                                
+                                val existingProduct = (if (parsedId != null && parsedId > 0) database.productDao().getProductById(parsedId) else null)
+                                    ?: (if (doc.sku.isNotBlank()) database.productDao().getProductBySku(doc.sku) else null)
+                                    ?: database.productDao().getProductByName(doc.name)
+
                                 when (change.type) {
                                     DocumentChange.Type.REMOVED -> {
-                                        if (parsedId != null && parsedId > 0) {
-                                            database.productDao().deleteProductById(parsedId)
+                                        val targetId = existingProduct?.id ?: parsedId
+                                        if (targetId != null && targetId > 0) {
+                                            database.productDao().deleteProductById(targetId)
                                         }
                                     }
                                     DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val targetId = existingProduct?.id ?: (parsedId ?: 0L)
                                         if (doc.isArchived) {
-                                            if (parsedId != null && parsedId > 0) {
-                                                database.productDao().archiveProduct(parsedId)
+                                            if (targetId > 0) {
+                                                database.productDao().archiveProduct(targetId)
                                             }
                                         } else {
                                             val entity = ProductEntity(
-                                                id = parsedId ?: 0L,
+                                                id = targetId,
                                                 sku = doc.sku,
                                                 name = doc.name,
                                                 hindiName = doc.hindiName,
@@ -113,7 +130,11 @@ class FirebaseSyncRepository(
                 .whereEqualTo("shopId", shopId)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.w(TAG, "Customer listener error: ${error.message}")
+                        if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.d(TAG, "Customer cloud listener: Auth required")
+                        } else {
+                            Log.w(TAG, "Customer listener error: ${error.message}")
+                        }
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
@@ -122,17 +143,24 @@ class FirebaseSyncRepository(
                                 val doc = change.document.toObject(CustomerDoc::class.java)
                                 val docId = change.document.id
                                 val parsedId = docId.substringAfterLast("_cust_", "").toLongOrNull()
+
+                                val existingCustomer = (if (parsedId != null && parsedId > 0) database.customerDao().getCustomerById(parsedId) else null)
+                                    ?: (if (doc.mobile.isNotBlank()) database.customerDao().getCustomerByMobile(doc.mobile) else null)
+                                    ?: database.customerDao().getCustomerByName(doc.name)
+
                                 when (change.type) {
                                     DocumentChange.Type.REMOVED -> {
-                                        if (parsedId != null && parsedId > 0) {
-                                            database.customerDao().deleteCustomerById(parsedId)
+                                        val targetId = existingCustomer?.id ?: parsedId
+                                        if (targetId != null && targetId > 0) {
+                                            database.customerDao().deleteCustomerById(targetId)
                                         } else if (doc.mobile.isNotBlank()) {
                                             database.customerDao().deleteCustomerByMobile(doc.mobile)
                                         }
                                     }
                                     DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val targetId = existingCustomer?.id ?: (parsedId ?: 0L)
                                         val entity = CustomerEntity(
-                                            id = parsedId ?: 0L,
+                                            id = targetId,
                                             name = doc.name,
                                             mobile = doc.mobile,
                                             address = doc.address,
@@ -153,11 +181,68 @@ class FirebaseSyncRepository(
                     }
                 }
 
+            supplierListener = firestore.collection("suppliers")
+                .whereEqualTo("shopId", shopId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.d(TAG, "Supplier cloud listener: Auth required")
+                        } else {
+                            Log.w(TAG, "Supplier listener error: ${error.message}")
+                        }
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        syncScope.launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document.toObject(SupplierDoc::class.java)
+                                val docId = change.document.id
+                                val parsedId = docId.substringAfterLast("_supp_", "").toLongOrNull()
+
+                                val existingSupplier = (if (parsedId != null && parsedId > 0) database.supplierDao().getSupplierById(parsedId) else null)
+                                    ?: (if (doc.name.isNotBlank()) database.supplierDao().getSupplierByName(doc.name) else null)
+                                    ?: (if (doc.mobile.isNotBlank()) database.supplierDao().getSupplierByMobile(doc.mobile) else null)
+
+                                when (change.type) {
+                                    DocumentChange.Type.REMOVED -> {
+                                        val targetId = existingSupplier?.id ?: parsedId
+                                        if (targetId != null && targetId > 0) {
+                                            database.supplierDao().deleteSupplierById(targetId)
+                                        }
+                                    }
+                                    DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val targetId = existingSupplier?.id ?: (parsedId ?: 0L)
+                                        val entity = SupplierEntity(
+                                            id = targetId,
+                                            name = doc.name,
+                                            contactPerson = doc.contactPerson,
+                                            mobile = doc.mobile,
+                                            email = doc.email,
+                                            address = doc.address,
+                                            gstin = doc.gstin,
+                                            totalPurchases = doc.totalPurchases,
+                                            outstandingBalance = doc.outstandingBalance,
+                                            notes = doc.notes,
+                                            createdAt = doc.createdAt,
+                                            updatedAt = doc.updatedAt
+                                        )
+                                        database.supplierDao().insertSupplier(entity)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
             expenseListener = firestore.collection("expenses")
                 .whereEqualTo("shopId", shopId)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.w(TAG, "Expense listener error: ${error.message}")
+                        if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.d(TAG, "Expense cloud listener: Auth required")
+                        } else {
+                            Log.w(TAG, "Expense listener error: ${error.message}")
+                        }
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
@@ -201,6 +286,8 @@ class FirebaseSyncRepository(
         productListener = null
         customerListener?.remove()
         customerListener = null
+        supplierListener?.remove()
+        supplierListener = null
         expenseListener?.remove()
         expenseListener = null
     }
@@ -213,8 +300,15 @@ class FirebaseSyncRepository(
     suspend fun performFullCloudSync(shopId: String = FirebaseManager.currentShopId): Result<String> = withContext(Dispatchers.IO) {
         val firestore = firestoreProvider() ?: run {
             _syncState.value = CloudSyncState.OFFLINE
-            _syncMessage.value = "Local Mode - Cloud Offline"
-            return@withContext Result.failure(Exception("Firestore not initialized"))
+            _syncMessage.value = "Local Mode - Offline Active"
+            return@withContext Result.success("Local Mode Active")
+        }
+        val currentUser = FirebaseManager.auth?.currentUser
+        if (currentUser == null) {
+            _syncState.value = CloudSyncState.OFFLINE
+            _syncMessage.value = "Local Storage Active (Sign in for Cloud Backup)"
+            Log.d(TAG, "Cloud sync deferred: User not signed in to Firebase Auth. Using local Room database.")
+            return@withContext Result.success("Offline storage active")
         }
         _syncState.value = CloudSyncState.SYNCING
         _syncMessage.value = "Synchronizing with Cloud..."
@@ -253,20 +347,19 @@ class FirebaseSyncRepository(
 
             val remoteProducts = remoteProductsSnap.documents.mapNotNull { it.toObject(ProductDoc::class.java) }
             val activeRemoteProducts = remoteProducts.filter { !it.isArchived }
-
             val localProducts = database.productDao().getAllActiveProductsSync()
 
             // Push any local products that don't exist remotely
             val remoteDocIds = remoteProductsSnap.documents.map { it.id }.toSet()
             val unsavedLocalProducts = localProducts.filter { p ->
-                val docId = if (p.sku.isNotBlank()) "${shopId}_${p.sku}" else "${shopId}_prod_${p.id}"
+                val docId = "${shopId}_prod_${p.id}"
                 docId !in remoteDocIds
             }
 
             if (unsavedLocalProducts.isNotEmpty()) {
                 val batch = firestore.batch()
                 unsavedLocalProducts.forEach { p ->
-                    val docId = if (p.sku.isNotBlank()) "${shopId}_${p.sku}" else "${shopId}_prod_${p.id}"
+                    val docId = "${shopId}_prod_${p.id}"
                     val ref = firestore.collection("products").document(docId)
                     val prodDoc = ProductDoc(
                         id = docId,
@@ -321,11 +414,10 @@ class FirebaseSyncRepository(
                     database.productDao().deleteProductsNotIn(validProductIds)
                 }
             } else {
-                // If cloud has 0 active products, clear local products
                 database.productDao().clearAllProducts()
             }
 
-            // 3. Push & Pull Customers (Mirrors deletion from Firebase)
+            // 3. Push & Pull Customers
             val remoteCustSnap = firestore.collection("customers")
                 .whereEqualTo("shopId", shopId)
                 .get()
@@ -336,14 +428,14 @@ class FirebaseSyncRepository(
 
             val remoteCustDocIds = remoteCustSnap.documents.map { it.id }.toSet()
             val unsavedLocalCustomers = localCustomers.filter { c ->
-                val docId = if (c.mobile.isNotBlank()) "${shopId}_cust_${c.mobile}" else "${shopId}_cust_${c.id}"
+                val docId = "${shopId}_cust_${c.id}"
                 docId !in remoteCustDocIds
             }
 
             if (unsavedLocalCustomers.isNotEmpty()) {
                 val custBatch = firestore.batch()
                 unsavedLocalCustomers.forEach { c ->
-                    val docId = if (c.mobile.isNotBlank()) "${shopId}_cust_${c.mobile}" else "${shopId}_cust_${c.id}"
+                    val docId = "${shopId}_cust_${c.id}"
                     val ref = firestore.collection("customers").document(docId)
                     val custDoc = CustomerDoc(
                         id = docId,
@@ -365,7 +457,6 @@ class FirebaseSyncRepository(
                 custBatch.commit().await()
             }
 
-            // Sync from Remote to Local: Insert/update remote customers, prune deleted ones
             val remoteCustomerEntities = remoteCustomers.map { doc ->
                 val parsedId = doc.id.substringAfterLast("_cust_", "").toLongOrNull() ?: 0L
                 CustomerEntity(
@@ -393,7 +484,68 @@ class FirebaseSyncRepository(
                 database.customerDao().clearAllCustomers()
             }
 
-            // 4. Push & Pull Expenses (Mirrors deletion from Firebase)
+            // 4. Push & Pull Suppliers
+            val remoteSuppSnap = firestore.collection("suppliers")
+                .whereEqualTo("shopId", shopId)
+                .get()
+                .await()
+
+            val remoteSuppliers = remoteSuppSnap.documents.mapNotNull { it.toObject(SupplierDoc::class.java) }
+            val localSuppliers = database.supplierDao().getAllSuppliersSync()
+            val remoteSuppDocIds = remoteSuppSnap.documents.map { it.id }.toSet()
+
+            val unsavedLocalSuppliers = localSuppliers.filter { s ->
+                val docId = "${shopId}_supp_${s.id}"
+                docId !in remoteSuppDocIds
+            }
+
+            if (unsavedLocalSuppliers.isNotEmpty()) {
+                val suppBatch = firestore.batch()
+                unsavedLocalSuppliers.forEach { s ->
+                    val docId = "${shopId}_supp_${s.id}"
+                    val ref = firestore.collection("suppliers").document(docId)
+                    val suppDoc = SupplierDoc(
+                        id = docId,
+                        shopId = shopId,
+                        name = s.name,
+                        contactPerson = s.contactPerson,
+                        mobile = s.mobile,
+                        email = s.email,
+                        address = s.address,
+                        gstin = s.gstin,
+                        totalPurchases = s.totalPurchases,
+                        outstandingBalance = s.outstandingBalance,
+                        notes = s.notes,
+                        createdAt = s.createdAt,
+                        updatedAt = s.updatedAt
+                    )
+                    suppBatch.set(ref, suppDoc, SetOptions.merge())
+                }
+                suppBatch.commit().await()
+            }
+
+            val remoteSupplierEntities = remoteSuppliers.map { doc ->
+                val parsedId = doc.id.substringAfterLast("_supp_", "").toLongOrNull() ?: 0L
+                SupplierEntity(
+                    id = parsedId,
+                    name = doc.name,
+                    contactPerson = doc.contactPerson,
+                    mobile = doc.mobile,
+                    email = doc.email,
+                    address = doc.address,
+                    gstin = doc.gstin,
+                    totalPurchases = doc.totalPurchases,
+                    outstandingBalance = doc.outstandingBalance,
+                    notes = doc.notes,
+                    createdAt = doc.createdAt,
+                    updatedAt = doc.updatedAt
+                )
+            }
+            if (remoteSupplierEntities.isNotEmpty()) {
+                database.supplierDao().insertAllSuppliers(remoteSupplierEntities)
+            }
+
+            // 5. Push & Pull Expenses
             val remoteExpSnap = firestore.collection("expenses")
                 .whereEqualTo("shopId", shopId)
                 .get()
@@ -456,19 +608,96 @@ class FirebaseSyncRepository(
                 database.expenseDao().clearAllExpenses()
             }
 
+            // 6. Pull Remote Sales (if local is empty or multi-device sync)
+            try {
+                val remoteSalesSnap = firestore.collection("sales")
+                    .whereEqualTo("shopId", shopId)
+                    .get()
+                    .await()
+
+                for (docSnap in remoteSalesSnap.documents) {
+                    val saleDoc = docSnap.toObject(SaleDoc::class.java)
+                    if (saleDoc != null && saleDoc.invoiceNumber.isNotBlank()) {
+                        val existingSale = database.saleDao().getSaleByInvoiceNumber(saleDoc.invoiceNumber)
+                        if (existingSale == null) {
+                            val parsedCustId = saleDoc.customerId?.substringAfterLast("_cust_", "")?.toLongOrNull()
+                            val saleEntity = SaleEntity(
+                                invoiceNumber = saleDoc.invoiceNumber,
+                                customerId = parsedCustId,
+                                customerName = saleDoc.customerName,
+                                customerMobile = saleDoc.customerMobile,
+                                saleDate = saleDoc.saleDate,
+                                subtotal = saleDoc.subtotal,
+                                discount = saleDoc.discount,
+                                taxAmount = saleDoc.taxAmount,
+                                grandTotal = saleDoc.grandTotal,
+                                totalCost = saleDoc.totalCost,
+                                grossProfit = saleDoc.grossProfit,
+                                profitMarginPercent = saleDoc.profitMarginPercent,
+                                paymentMethod = saleDoc.paymentMethod,
+                                paymentStatus = saleDoc.paymentStatus,
+                                paidAmount = saleDoc.paidAmount,
+                                balanceAmount = saleDoc.balanceAmount,
+                                dueDate = saleDoc.dueDate,
+                                notes = saleDoc.notes,
+                                isCancelled = false,
+                                createdAt = saleDoc.createdAt
+                            )
+                            val insertedSaleId = database.saleDao().insertSale(saleEntity)
+
+                            // Fetch sale items
+                            val itemsSnap = firestore.collection("saleItems")
+                                .whereEqualTo("saleId", saleDoc.id)
+                                .get()
+                                .await()
+
+                            val itemEntities = itemsSnap.documents.mapNotNull { it.toObject(SaleItemDoc::class.java) }.map { itemDoc ->
+                                val parsedProdId = itemDoc.productId.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                                SaleItemEntity(
+                                    saleId = insertedSaleId,
+                                    productId = parsedProdId,
+                                    productName = itemDoc.productName,
+                                    unit = itemDoc.unit,
+                                    quantity = itemDoc.quantity,
+                                    sellingPrice = itemDoc.sellingPrice,
+                                    costPrice = itemDoc.costPrice,
+                                    discount = itemDoc.discount,
+                                    totalAmount = itemDoc.totalAmount,
+                                    itemProfit = itemDoc.itemProfit
+                                )
+                            }
+                            if (itemEntities.isNotEmpty()) {
+                                database.saleDao().insertSaleItems(itemEntities)
+                            }
+                        }
+                    }
+                }
+            } catch (se: Exception) {
+                Log.w(TAG, "Sales cloud pull warning: ${se.message}")
+            }
+
             // Start / refresh real-time listeners
             startRealtimeListeners(shopId)
 
             _lastSyncTime.value = System.currentTimeMillis()
             _syncState.value = CloudSyncState.SUCCESS
             _syncMessage.value = "Synced with Firestore (Deletions & Updates applied)"
-            Log.d(TAG, "Full Cloud Firestore Sync and Deletion Mirror completed successfully.")
+            Log.d(TAG, "Full Cloud Firestore Sync completed successfully.")
             Result.success("Sync completed successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud sync error: ${e.message}", e)
-            _syncState.value = CloudSyncState.ERROR
-            _syncMessage.value = "Sync Error: ${e.localizedMessage}"
-            Result.failure(e)
+            val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermissionDenied) {
+                Log.d(TAG, "Cloud sync deferred: Firestore authentication required (running offline mode).")
+                _syncState.value = CloudSyncState.OFFLINE
+                _syncMessage.value = "Local Mode Active (Sign in for Cloud Sync)"
+                Result.success("Local mode active")
+            } else {
+                Log.e(TAG, "Cloud sync error: ${e.message}", e)
+                _syncState.value = CloudSyncState.ERROR
+                _syncMessage.value = "Sync Error: ${e.localizedMessage}"
+                Result.failure(e)
+            }
         }
     }
 
@@ -479,9 +708,10 @@ class FirebaseSyncRepository(
         product: ProductEntity,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
-            val docId = if (product.sku.isNotBlank()) "${shopId}_${product.sku}" else "${shopId}_prod_${product.id}"
+            val docId = "${shopId}_prod_${product.id}"
             val ref = firestore.collection("products").document(docId)
             val prodDoc = ProductDoc(
                 id = docId,
@@ -516,11 +746,11 @@ class FirebaseSyncRepository(
         product: ProductEntity,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
-            val docId = if (product.sku.isNotBlank()) "${shopId}_${product.sku}" else "${shopId}_prod_${product.id}"
+            val docId = "${shopId}_prod_${product.id}"
             val ref = firestore.collection("products").document(docId)
-            // Mark archived in Firestore or delete
             ref.update(mapOf("isArchived" to true, "updatedAt" to System.currentTimeMillis())).await()
             Log.d(TAG, "Product $docId archived in Firestore")
         } catch (e: Exception) {
@@ -535,9 +765,10 @@ class FirebaseSyncRepository(
         customer: CustomerEntity,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
-            val docId = if (customer.mobile.isNotBlank()) "${shopId}_cust_${customer.mobile}" else "${shopId}_cust_${customer.id}"
+            val docId = "${shopId}_cust_${customer.id}"
             val ref = firestore.collection("customers").document(docId)
             val custDoc = CustomerDoc(
                 id = docId,
@@ -562,12 +793,47 @@ class FirebaseSyncRepository(
     }
 
     /**
+     * Saves or updates a single Supplier in Firestore directly
+     */
+    suspend fun syncSupplierToCloud(
+        supplier: SupplierEntity,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = "${shopId}_supp_${supplier.id}"
+            val ref = firestore.collection("suppliers").document(docId)
+            val suppDoc = SupplierDoc(
+                id = docId,
+                shopId = shopId,
+                name = supplier.name,
+                contactPerson = supplier.contactPerson,
+                mobile = supplier.mobile,
+                email = supplier.email,
+                address = supplier.address,
+                gstin = supplier.gstin,
+                totalPurchases = supplier.totalPurchases,
+                outstandingBalance = supplier.outstandingBalance,
+                notes = supplier.notes,
+                createdAt = supplier.createdAt,
+                updatedAt = System.currentTimeMillis()
+            )
+            ref.set(suppDoc, SetOptions.merge()).await()
+            Log.d(TAG, "Supplier $docId saved directly to Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Supplier save to Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
      * Saves or updates a single Expense in Firestore directly
      */
     suspend fun syncExpenseToCloud(
         expense: ExpenseEntity,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
             val docId = "${shopId}_exp_${expense.id}"
@@ -600,6 +866,7 @@ class FirebaseSyncRepository(
         expenseId: Long,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
             val docId = "${shopId}_exp_${expenseId}"
@@ -620,6 +887,7 @@ class FirebaseSyncRepository(
         notes: String,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val paymentDoc = PaymentDoc(
             shopId = shopId,
             referenceType = "CUSTOMER_UDHAAR",
@@ -644,6 +912,7 @@ class FirebaseSyncRepository(
         reason: String,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
             val prodDocId = "${shopId}_prod_$productId"
@@ -686,6 +955,7 @@ class FirebaseSyncRepository(
         items: List<SaleItemEntity>,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         try {
             val saleDoc = SaleDoc(
                 shopId = shopId,
@@ -746,6 +1016,7 @@ class FirebaseSyncRepository(
         items: List<PurchaseItemEntity>,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
         try {
             val purchaseDoc = PurchaseDoc(
                 shopId = shopId,
