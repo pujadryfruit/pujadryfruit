@@ -46,9 +46,10 @@ class FirebaseSyncRepository(
     private var customerListener: ListenerRegistration? = null
     private var supplierListener: ListenerRegistration? = null
     private var expenseListener: ListenerRegistration? = null
+    private var paymentListener: ListenerRegistration? = null
 
     /**
-     * Initializes real-time listener for products, customers, suppliers & expenses from Firestore to local Room.
+     * Initializes real-time listener for products, customers, suppliers, expenses & payments from Firestore to local Room.
      * Uses efficient snapshot listeners restricted by shopId and prevents duplicate row creation.
      */
     fun startRealtimeListeners(shopId: String = FirebaseManager.currentShopId) {
@@ -276,6 +277,53 @@ class FirebaseSyncRepository(
                         }
                     }
                 }
+
+            paymentListener = firestore.collection("payments")
+                .whereEqualTo("shopId", shopId)
+                .whereEqualTo("referenceType", "CUSTOMER_UDHAAR")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        if (error.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            Log.d(TAG, "Payment cloud listener: Auth required")
+                        } else {
+                            Log.w(TAG, "Payment listener error: ${error.message}")
+                        }
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        syncScope.launch {
+                            for (change in snapshot.documentChanges) {
+                                val doc = change.document.toObject(PaymentDoc::class.java)
+                                val docId = change.document.id
+                                val parsedId = docId.substringAfterLast("_pay_", "").toLongOrNull()
+                                val parsedCustId = doc.customerId?.substringAfterLast("_cust_", "")?.toLongOrNull() ?: 0L
+
+                                when (change.type) {
+                                    DocumentChange.Type.REMOVED -> {
+                                        if (parsedId != null && parsedId > 0) {
+                                            database.creditPaymentDao().deletePaymentById(parsedId)
+                                        }
+                                    }
+                                    DocumentChange.Type.ADDED, DocumentChange.Type.MODIFIED -> {
+                                        val custName = if (parsedCustId > 0) {
+                                            database.customerDao().getCustomerById(parsedCustId)?.name ?: "Customer"
+                                        } else "Customer"
+                                        val entity = CreditPaymentEntity(
+                                            id = parsedId ?: 0L,
+                                            customerId = parsedCustId,
+                                            customerName = custName,
+                                            amount = doc.amount,
+                                            paymentDate = doc.paymentDate,
+                                            paymentMethod = doc.paymentMethod,
+                                            notes = doc.notes
+                                        )
+                                        database.creditPaymentDao().insertPayment(entity)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Error starting real-time listeners: ${e.message}", e)
         }
@@ -290,6 +338,8 @@ class FirebaseSyncRepository(
         supplierListener = null
         expenseListener?.remove()
         expenseListener = null
+        paymentListener?.remove()
+        paymentListener = null
     }
 
     /**
@@ -687,6 +737,123 @@ class FirebaseSyncRepository(
                 Log.w(TAG, "Sales cloud sync warning: ${se.message}")
             }
 
+            // 7. Push & Pull Purchases
+            try {
+                val localPurchases = database.purchaseDao().getAllPurchasesSync()
+                val remotePurchasesSnap = firestore.collection("purchases")
+                    .whereEqualTo("shopId", shopId)
+                    .get()
+                    .await()
+
+                val remotePurchaseIds = remotePurchasesSnap.documents.map { it.id }.toSet()
+                val unsavedLocalPurchases = localPurchases.filter { "${shopId}_pur_${it.id}" !in remotePurchaseIds }
+
+                for (pur in unsavedLocalPurchases) {
+                    val purItems = database.purchaseDao().getPurchaseItemsSync(pur.id)
+                    syncPurchaseToCloud(pur, purItems, shopId)
+                }
+
+                for (docSnap in remotePurchasesSnap.documents) {
+                    val purDoc = docSnap.toObject(PurchaseDoc::class.java)
+                    if (purDoc != null) {
+                        val parsedId = docSnap.id.substringAfterLast("_pur_", "").toLongOrNull() ?: 0L
+                        val existingPur = if (parsedId > 0) database.purchaseDao().getPurchaseById(parsedId) else null
+                        if (existingPur == null) {
+                            val purchaseEntity = PurchaseEntity(
+                                id = parsedId,
+                                purchaseDate = purDoc.purchaseDate,
+                                supplierName = purDoc.supplierName,
+                                supplierPhone = purDoc.supplierPhone,
+                                invoiceReference = purDoc.invoiceReference,
+                                totalAmount = purDoc.totalAmount,
+                                paymentStatus = purDoc.paymentStatus,
+                                paymentMethod = purDoc.paymentMethod,
+                                notes = purDoc.notes,
+                                createdAt = purDoc.createdAt
+                            )
+                            val insertedPurId = database.purchaseDao().insertPurchase(purchaseEntity)
+
+                            val itemsSnap = firestore.collection("purchaseItems")
+                                .whereEqualTo("purchaseId", purDoc.id)
+                                .get()
+                                .await()
+
+                            val itemEntities = itemsSnap.documents.mapNotNull { it.toObject(PurchaseItemDoc::class.java) }.map { itemDoc ->
+                                val parsedProdId = itemDoc.productId.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                                PurchaseItemEntity(
+                                    purchaseId = if (parsedId > 0) parsedId else insertedPurId,
+                                    productId = parsedProdId,
+                                    productName = itemDoc.productName,
+                                    unit = itemDoc.unit,
+                                    quantity = itemDoc.quantity,
+                                    purchasePrice = itemDoc.purchasePrice,
+                                    totalAmount = itemDoc.totalAmount
+                                )
+                            }
+                            if (itemEntities.isNotEmpty()) {
+                                database.purchaseDao().insertPurchaseItems(itemEntities)
+                            }
+                        }
+                    }
+                }
+            } catch (pe: Exception) {
+                Log.w(TAG, "Purchases cloud sync warning: ${pe.message}")
+            }
+
+            // 8. Push & Pull Credit Payments
+            try {
+                val localPayments = database.creditPaymentDao().getAllCreditPaymentsSync()
+                val remotePaymentsSnap = firestore.collection("payments")
+                    .whereEqualTo("shopId", shopId)
+                    .whereEqualTo("referenceType", "CUSTOMER_UDHAAR")
+                    .get()
+                    .await()
+
+                val remotePaymentIds = remotePaymentsSnap.documents.map { it.id }.toSet()
+                val unsavedPayments = localPayments.filter { "${shopId}_pay_${it.id}" !in remotePaymentIds }
+
+                for (pay in unsavedPayments) {
+                    val payDoc = PaymentDoc(
+                        id = "${shopId}_pay_${pay.id}",
+                        shopId = shopId,
+                        referenceType = "CUSTOMER_UDHAAR",
+                        customerId = "${shopId}_cust_${pay.customerId}",
+                        amount = pay.amount,
+                        paymentMethod = pay.paymentMethod,
+                        notes = pay.notes,
+                        createdByUserId = FirebaseManager.currentUserId,
+                        paymentDate = pay.paymentDate
+                    )
+                    firestore.collection("payments").document(payDoc.id).set(payDoc, SetOptions.merge()).await()
+                }
+
+                for (docSnap in remotePaymentsSnap.documents) {
+                    val payDoc = docSnap.toObject(PaymentDoc::class.java)
+                    if (payDoc != null) {
+                        val parsedId = docSnap.id.substringAfterLast("_pay_", "").toLongOrNull() ?: 0L
+                        val parsedCustId = payDoc.customerId?.substringAfterLast("_cust_", "")?.toLongOrNull() ?: 0L
+                        val existingPay = if (parsedId > 0) database.creditPaymentDao().getPaymentById(parsedId) else null
+                        if (existingPay == null) {
+                            val custName = if (parsedCustId > 0) {
+                                database.customerDao().getCustomerById(parsedCustId)?.name ?: "Customer"
+                            } else "Customer"
+                            val payEntity = CreditPaymentEntity(
+                                id = parsedId,
+                                customerId = parsedCustId,
+                                customerName = custName,
+                                amount = payDoc.amount,
+                                paymentDate = payDoc.paymentDate,
+                                paymentMethod = payDoc.paymentMethod,
+                                notes = payDoc.notes
+                            )
+                            database.creditPaymentDao().insertPayment(payEntity)
+                        }
+                    }
+                }
+            } catch (payEx: Exception) {
+                Log.w(TAG, "Credit payments cloud sync warning: ${payEx.message}")
+            }
+
             // Start / refresh real-time listeners
             startRealtimeListeners(shopId)
 
@@ -889,17 +1056,39 @@ class FirebaseSyncRepository(
     }
 
     /**
-     * Records a payment against customer Udhaar in Firestore
+     * Deletes a Customer in Firestore directly
+     */
+    suspend fun deleteCustomerFromCloud(
+        customerId: Long,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        val firestore = firestoreProvider() ?: return@withContext
+        try {
+            val docId = "${shopId}_cust_${customerId}"
+            firestore.collection("customers").document(docId).delete().await()
+            Log.d(TAG, "Customer $docId deleted from Firestore")
+        } catch (e: Exception) {
+            Log.w(TAG, "Customer delete from Firestore queued/cached: ${e.message}")
+        }
+    }
+
+    /**
+     * Records a payment against customer Udhaar in Firestore atomically,
+     * and updates affected sales/invoices payment statuses.
      */
     suspend fun syncPaymentToCloud(
         customerId: Long,
         amount: Double,
         paymentMethod: String,
         notes: String,
+        paymentId: Long = 0L,
+        updatedSales: List<SaleEntity> = emptyList(),
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
         if (FirebaseManager.auth?.currentUser == null) return@withContext
         val paymentDoc = PaymentDoc(
+            id = if (paymentId > 0) "${shopId}_pay_$paymentId" else "",
             shopId = shopId,
             referenceType = "CUSTOMER_UDHAAR",
             customerId = "${shopId}_cust_$customerId",
@@ -909,7 +1098,7 @@ class FirebaseSyncRepository(
             createdByUserId = FirebaseManager.currentUserId,
             paymentDate = System.currentTimeMillis()
         )
-        transactionManager.executePaymentTransaction(shopId, paymentDoc)
+        transactionManager.executePaymentTransaction(shopId, paymentDoc, updatedSales)
     }
 
     /**
@@ -966,7 +1155,7 @@ class FirebaseSyncRepository(
         items: List<SaleItemEntity>,
         shopId: String = FirebaseManager.currentShopId
     ) = withContext(Dispatchers.IO) {
-        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        val firestore = firestoreProvider() ?: return@withContext
         try {
             val saleDoc = SaleDoc(
                 shopId = shopId,
@@ -1030,6 +1219,7 @@ class FirebaseSyncRepository(
         if (FirebaseManager.auth?.currentUser == null) return@withContext
         try {
             val purchaseDoc = PurchaseDoc(
+                id = "${shopId}_pur_${purchase.id}",
                 shopId = shopId,
                 purchaseDate = purchase.purchaseDate,
                 supplierId = "${shopId}_supp_${purchase.supplierName.hashCode()}",
@@ -1064,6 +1254,71 @@ class FirebaseSyncRepository(
             )
         } catch (e: Exception) {
             Log.w(TAG, "Background Firestore purchase sync cached locally: ${e.message}")
+        }
+    }
+
+    /**
+     * Updates an existing Purchase record and adjusts product stock in Firestore
+     */
+    suspend fun syncPurchaseUpdateToCloud(
+        purchase: PurchaseEntity,
+        newItems: List<PurchaseItemEntity>,
+        oldItems: List<PurchaseItemEntity>,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        try {
+            val purchaseDoc = PurchaseDoc(
+                id = "${shopId}_pur_${purchase.id}",
+                shopId = shopId,
+                purchaseDate = purchase.purchaseDate,
+                supplierId = "${shopId}_supp_${purchase.supplierName.hashCode()}",
+                supplierName = purchase.supplierName,
+                supplierPhone = purchase.supplierPhone,
+                invoiceReference = purchase.invoiceReference,
+                totalAmount = purchase.totalAmount,
+                paymentStatus = purchase.paymentStatus,
+                paymentMethod = purchase.paymentMethod,
+                paidAmount = purchase.totalAmount,
+                notes = purchase.notes,
+                createdByUserId = FirebaseManager.currentUserId
+            )
+
+            val newDocs = newItems.map { item ->
+                PurchaseItemDoc(
+                    shopId = shopId,
+                    purchaseId = purchaseDoc.id,
+                    productId = "${shopId}_prod_${item.productId}",
+                    productName = item.productName,
+                    unit = item.unit,
+                    quantity = item.quantity,
+                    purchasePrice = item.purchasePrice,
+                    totalAmount = item.totalAmount
+                )
+            }
+
+            val oldDocs = oldItems.map { item ->
+                PurchaseItemDoc(
+                    shopId = shopId,
+                    purchaseId = purchaseDoc.id,
+                    productId = "${shopId}_prod_${item.productId}",
+                    productName = item.productName,
+                    unit = item.unit,
+                    quantity = item.quantity,
+                    purchasePrice = item.purchasePrice,
+                    totalAmount = item.totalAmount
+                )
+            }
+
+            transactionManager.executePurchaseUpdateTransaction(
+                shopId = shopId,
+                purchaseDoc = purchaseDoc,
+                newItems = newDocs,
+                oldItems = oldDocs,
+                supplierId = purchaseDoc.supplierId
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Background Firestore purchase update sync error: ${e.message}")
         }
     }
 }

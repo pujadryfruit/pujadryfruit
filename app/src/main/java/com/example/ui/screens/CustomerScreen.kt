@@ -49,8 +49,10 @@ fun CustomerScreen(
     var filterCreditOnly by remember { mutableStateOf(false) }
 
     var showAddCustomerDialog by remember { mutableStateOf(false) }
+    var customerToEdit by remember { mutableStateOf<CustomerEntity?>(null) }
     var selectedCustomerForDetail by remember { mutableStateOf<CustomerEntity?>(null) }
     var showRepayDialog by remember { mutableStateOf(false) }
+    var customerForRepay by remember { mutableStateOf<CustomerEntity?>(null) }
 
     val filteredCustomers = customers.filter { cust ->
         val matchesSearch = searchQuery.isBlank() ||
@@ -174,8 +176,9 @@ fun CustomerScreen(
                     CustomerCard(
                         customer = cust,
                         onSelect = { selectedCustomerForDetail = cust },
+                        onEditClick = { customerToEdit = cust },
                         onRepayClick = {
-                            selectedCustomerForDetail = cust
+                            customerForRepay = cust
                             showRepayDialog = true
                         },
                         onWhatsAppClick = {
@@ -186,7 +189,9 @@ fun CustomerScreen(
                 }
             }
         }
-    }    // Add Customer Dialog
+    }
+
+    // Add Customer Dialog
     if (showAddCustomerDialog) {
         var name by remember { mutableStateOf("") }
         var mobile by remember { mutableStateOf("") }
@@ -252,16 +257,237 @@ fun CustomerScreen(
         )
     }
 
-    // Record Repayment Dialog
-    if (showRepayDialog && selectedCustomerForDetail != null) {
+    // Edit Customer Dialog
+    if (customerToEdit != null) {
+        val cust = customerToEdit!!
+        var editName by remember(cust) { mutableStateOf(cust.name) }
+        var editMobile by remember(cust) { mutableStateOf(cust.mobile) }
+        var editAddress by remember(cust) { mutableStateOf(cust.address) }
+        var isUpdatingCustomer by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { if (!isUpdatingCustomer) customerToEdit = null },
+            title = { Text("Edit Customer Details") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Customer Name *") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth().testTag("edit_cust_name")
+                    )
+                    OutlinedTextField(
+                        value = editMobile,
+                        onValueChange = { editMobile = it },
+                        label = { Text("Mobile Number") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Phone,
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Next
+                        ),
+                        modifier = Modifier.fillMaxWidth().testTag("edit_cust_mobile")
+                    )
+                    OutlinedTextField(
+                        value = editAddress,
+                        onValueChange = { editAddress = it },
+                        label = { Text("City / Delivery Address") },
+                        keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth().testTag("edit_cust_address")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (editName.isNotBlank() && !isUpdatingCustomer) {
+                            isUpdatingCustomer = true
+                            viewModel.updateCustomer(
+                                cust.copy(
+                                    name = editName.trim(),
+                                    mobile = editMobile.trim(),
+                                    address = editAddress.trim()
+                                )
+                            ) {
+                                isUpdatingCustomer = false
+                                customerToEdit = null
+                            }
+                        }
+                    },
+                    enabled = editName.isNotBlank() && !isUpdatingCustomer
+                ) {
+                    if (isUpdatingCustomer) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text("Update Customer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { customerToEdit = null }, enabled = !isUpdatingCustomer) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Customer Detail Modal BottomSheet
+    if (selectedCustomerForDetail != null) {
         val cust = selectedCustomerForDetail!!
-        var repayAmount by remember { mutableStateOf(cust.outstandingBalance.toString()) }
+        ModalBottomSheet(
+            onDismissRequest = { selectedCustomerForDetail = null },
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = cust.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (cust.mobile.isNotBlank()) {
+                            Text(
+                                text = "📱 ${cust.mobile}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (cust.address.isNotBlank()) {
+                            Text(
+                                text = "📍 ${cust.address}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = {
+                            val target = cust
+                            selectedCustomerForDetail = null
+                            customerToEdit = target
+                        }
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit Customer", tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                Divider()
+
+                // Balance summary
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (cust.outstandingBalance > 0) PurpleUdhaar.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Outstanding Udhaar", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+                        Text(
+                            text = CurrencyUtils.formatInr(cust.outstandingBalance),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (cust.outstandingBalance > 0) PurpleUdhaar else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    if (cust.outstandingBalance > 0) {
+                        Button(
+                            onClick = {
+                                val target = cust
+                                selectedCustomerForDetail = null
+                                customerForRepay = target
+                                showRepayDialog = true
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PurpleUdhaar)
+                        ) {
+                            Text("Receive Payment")
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Total Orders", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Text("${cust.totalOrders}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Total Spent", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Text(CurrencyUtils.formatInr(cust.totalSpent), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val target = cust
+                            selectedCustomerForDetail = null
+                            customerToEdit = target
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Edit Details")
+                    }
+                    if (cust.mobile.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                val msg = "Namaste ${cust.name} ji, Greetings from Puja Dry Fruits!"
+                                ShareUtils.shareViaWhatsApp(context, cust.mobile, msg)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("WhatsApp", color = Color.White)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+            }
+        }
+    }
+
+    // Record Repayment Dialog
+    if (showRepayDialog && customerForRepay != null) {
+        val cust = customerForRepay!!
+        var repayAmount by remember(cust) { mutableStateOf(cust.outstandingBalance.toString()) }
         var repayMode by remember { mutableStateOf("Cash") }
         var repayNote by remember { mutableStateOf("Payment received towards pending bill") }
         var isSavingRepayment by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { if (!isSavingRepayment) showRepayDialog = false },
+            onDismissRequest = { if (!isSavingRepayment) { showRepayDialog = false; customerForRepay = null } },
             title = { Text("Receive Udhaar Payment") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -307,6 +533,7 @@ fun CustomerScreen(
                             isSavingRepayment = true
                             viewModel.recordUdhaarRepayment(cust.id, amt, repayMode, repayNote)
                             showRepayDialog = false
+                            customerForRepay = null
                         }
                     },
                     enabled = !isSavingRepayment,
@@ -320,7 +547,10 @@ fun CustomerScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showRepayDialog = false }, enabled = !isSavingRepayment) {
+                TextButton(
+                    onClick = { showRepayDialog = false; customerForRepay = null },
+                    enabled = !isSavingRepayment
+                ) {
                     Text("Cancel")
                 }
             }
@@ -332,6 +562,7 @@ fun CustomerScreen(
 fun CustomerCard(
     customer: CustomerEntity,
     onSelect: () -> Unit,
+    onEditClick: () -> Unit,
     onRepayClick: () -> Unit,
     onWhatsAppClick: () -> Unit
 ) {
@@ -422,6 +653,9 @@ fun CustomerCard(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                IconButton(onClick = onEditClick, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit Customer", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                }
                 if (customer.mobile.isNotEmpty()) {
                     IconButton(onClick = onWhatsAppClick, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.Send, contentDescription = "WhatsApp", tint = Color(0xFF25D366), modifier = Modifier.size(18.dp))

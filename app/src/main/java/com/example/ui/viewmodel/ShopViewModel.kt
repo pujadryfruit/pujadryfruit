@@ -71,7 +71,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val salesRepo = SalesRepository(db, db.saleDao(), db.productDao(), db.customerDao(), db.stockAuditDao(), db.shopDao())
     val supplierRepo = SupplierRepository(db.supplierDao())
     val purchaseRepo = PurchaseRepository(db, db.purchaseDao(), db.productDao(), db.supplierDao(), db.stockAuditDao())
-    val customerRepo = CustomerRepository(db.customerDao(), db.creditPaymentDao())
+    val customerRepo = CustomerRepository(db.customerDao(), db.creditPaymentDao(), db.saleDao())
     val expenseRepo = ExpenseRepository(db.expenseDao())
     val stockAuditDao = db.stockAuditDao()
 
@@ -667,6 +667,57 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updatePurchase(
+        purchaseId: Long,
+        supplierName: String,
+        supplierPhone: String,
+        invoiceRef: String,
+        paymentMethod: String,
+        paymentStatus: String,
+        notes: String,
+        items: List<Pair<ProductEntity, Double>>,
+        priceOverrides: Map<Long, Double> = emptyMap(),
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val oldItems = purchaseRepo.getPurchaseItemsSync(purchaseId)
+            val purchaseItems = items.map { (prod, qty) ->
+                val pPrice = priceOverrides[prod.id] ?: prod.purchasePrice
+                PurchaseItemEntity(
+                    purchaseId = purchaseId,
+                    productId = prod.id,
+                    productName = prod.name,
+                    unit = prod.unit,
+                    quantity = qty,
+                    purchasePrice = pPrice,
+                    totalAmount = pPrice * qty
+                )
+            }
+            val totalAmount = purchaseItems.sumOf { it.totalAmount }
+            val updatedPurchase = PurchaseEntity(
+                id = purchaseId,
+                supplierName = supplierName.trim(),
+                supplierPhone = supplierPhone.trim(),
+                invoiceReference = invoiceRef.trim(),
+                totalAmount = totalAmount,
+                paymentStatus = paymentStatus,
+                paymentMethod = paymentMethod,
+                notes = notes.trim(),
+                purchaseDate = System.currentTimeMillis()
+            )
+            purchaseRepo.updatePurchase(purchaseId, updatedPurchase, purchaseItems)
+            _uiEventMessage.emit("Stock inward #${purchaseId} updated successfully!")
+            launch {
+                syncRepo.syncPurchaseUpdateToCloud(updatedPurchase, purchaseItems, oldItems)
+            }
+            onComplete?.invoke(true)
+        }
+    }
+
+    suspend fun getPurchaseItemsForEdit(purchaseId: Long): List<PurchaseItemEntity> {
+        return purchaseRepo.getPurchaseItemsSync(purchaseId)
+    }
+
     // --- Customer & Udhaar Operations ---
     fun addCustomer(name: String, mobile: String, address: String, onComplete: ((CustomerEntity) -> Unit)? = null) {
         viewModelScope.launch {
@@ -712,6 +763,33 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateCustomer(customer: CustomerEntity, onComplete: ((Boolean) -> Unit)? = null) {
+        viewModelScope.launch {
+            val updated = customer.copy(
+                name = customer.name.trim(),
+                mobile = customer.mobile.trim(),
+                address = customer.address.trim(),
+                updatedAt = System.currentTimeMillis()
+            )
+            customerRepo.updateCustomer(updated)
+            _uiEventMessage.emit("Customer ${updated.name} updated")
+            launch {
+                syncRepo.syncCustomerToCloud(updated)
+            }
+            onComplete?.invoke(true)
+        }
+    }
+
+    fun deleteCustomer(customerId: Long) {
+        viewModelScope.launch {
+            customerRepo.deleteCustomer(customerId)
+            _uiEventMessage.emit("Customer removed")
+            launch {
+                syncRepo.deleteCustomerFromCloud(customerId)
+            }
+        }
+    }
+
     fun recordUdhaarRepayment(
         customerId: Long,
         amount: Double,
@@ -719,10 +797,17 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         notes: String
     ) {
         viewModelScope.launch {
-            customerRepo.recordCreditRepayment(customerId, amount, paymentMethod, notes)
+            val (paymentId, updatedSales) = customerRepo.recordCreditRepayment(customerId, amount, paymentMethod, notes)
             _uiEventMessage.emit("Received payment of ₹$amount from customer")
             launch {
-                syncRepo.syncPaymentToCloud(customerId, amount, paymentMethod, notes)
+                syncRepo.syncPaymentToCloud(
+                    customerId = customerId,
+                    amount = amount,
+                    paymentMethod = paymentMethod,
+                    notes = notes,
+                    paymentId = paymentId,
+                    updatedSales = updatedSales
+                )
             }
         }
     }

@@ -49,6 +49,7 @@ fun PurchaseScreen(
     val allSuppliers by viewModel.allSuppliers.collectAsStateWithLifecycle()
 
     var showAddPurchaseSheet by remember { mutableStateOf(false) }
+    var purchaseToEdit by remember { mutableStateOf<PurchaseEntity?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
     val filteredPurchases = purchases.filter { p ->
@@ -130,21 +131,32 @@ fun PurchaseScreen(
                 }
             } else {
                 items(filteredPurchases) { purchase ->
-                    PurchaseCard(purchase = purchase)
+                    PurchaseCard(
+                        purchase = purchase,
+                        onEditClick = { purchaseToEdit = purchase }
+                    )
                 }
             }
         }
     }
 
-    // Add Purchase Bottom Sheet
-    if (showAddPurchaseSheet) {
+    // Add / Edit Purchase Bottom Sheet
+    if (showAddPurchaseSheet || purchaseToEdit != null) {
+        val editingPurchase = purchaseToEdit
         ModalBottomSheet(
-            onDismissRequest = { showAddPurchaseSheet = false },
+            onDismissRequest = {
+                showAddPurchaseSheet = false
+                purchaseToEdit = null
+            },
             containerColor = MaterialTheme.colorScheme.surface
         ) {
             AddPurchaseSheetContent(
                 products = allProducts,
                 suppliers = allSuppliers,
+                initialPurchase = editingPurchase,
+                onLoadItems = { purchaseId ->
+                    viewModel.getPurchaseItemsForEdit(purchaseId)
+                },
                 onAddSupplier = { name, phone, company, address, gstin, onDone ->
                     val supp = SupplierEntity(
                         name = name,
@@ -158,21 +170,46 @@ fun PurchaseScreen(
                     }
                 },
                 onSave = { supplier, phone, invRef, mode, status, notes, items, priceOverrides, onComplete ->
-                    viewModel.recordPurchase(supplier, phone, invRef, mode, status, notes, items, priceOverrides) {
-                        onComplete()
-                        showAddPurchaseSheet = false
+                    if (editingPurchase != null) {
+                        viewModel.updatePurchase(
+                            purchaseId = editingPurchase.id,
+                            supplierName = supplier,
+                            supplierPhone = phone,
+                            invoiceRef = invRef,
+                            paymentMethod = mode,
+                            paymentStatus = status,
+                            notes = notes,
+                            items = items,
+                            priceOverrides = priceOverrides
+                        ) {
+                            onComplete()
+                            purchaseToEdit = null
+                        }
+                    } else {
+                        viewModel.recordPurchase(supplier, phone, invRef, mode, status, notes, items, priceOverrides) {
+                            onComplete()
+                            showAddPurchaseSheet = false
+                        }
                     }
                 },
-                onCancel = { showAddPurchaseSheet = false }
+                onCancel = {
+                    showAddPurchaseSheet = false
+                    purchaseToEdit = null
+                }
             )
         }
     }
 }
 
 @Composable
-fun PurchaseCard(purchase: PurchaseEntity) {
+fun PurchaseCard(
+    purchase: PurchaseEntity,
+    onEditClick: () -> Unit = {}
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onEditClick() },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
@@ -196,7 +233,13 @@ fun PurchaseCard(purchase: PurchaseEntity) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                StatusBadge(status = purchase.paymentStatus)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusBadge(status = purchase.paymentStatus)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(onClick = onEditClick, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit Stock In", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -236,6 +279,8 @@ fun PurchaseCard(purchase: PurchaseEntity) {
 fun AddPurchaseSheetContent(
     products: List<ProductEntity>,
     suppliers: List<SupplierEntity>,
+    initialPurchase: PurchaseEntity? = null,
+    onLoadItems: (suspend (Long) -> List<com.example.data.local.entities.PurchaseItemEntity>)? = null,
     onAddSupplier: (name: String, phone: String, company: String, address: String, gstin: String, onDone: (SupplierEntity) -> Unit) -> Unit,
     onSave: (
         supplierName: String,
@@ -250,9 +295,9 @@ fun AddPurchaseSheetContent(
     ) -> Unit,
     onCancel: () -> Unit
 ) {
-    var supplierQuery by remember { mutableStateOf("") }
+    var supplierQuery by remember(initialPurchase) { mutableStateOf(initialPurchase?.supplierName ?: "") }
     var selectedSupplier by remember { mutableStateOf<SupplierEntity?>(null) }
-    var supplierPhone by remember { mutableStateOf("") }
+    var supplierPhone by remember(initialPurchase) { mutableStateOf(initialPurchase?.supplierPhone ?: "") }
     var isSupplierDropdownExpanded by remember { mutableStateOf(false) }
 
     // Dialog for adding a new supplier
@@ -263,10 +308,10 @@ fun AddPurchaseSheetContent(
     var newSupplierGstin by remember { mutableStateOf("") }
     var isAddingSupplier by remember { mutableStateOf(false) }
 
-    var invoiceRef by remember { mutableStateOf("") }
-    var paymentMethod by remember { mutableStateOf("Bank Transfer") }
-    var paymentStatus by remember { mutableStateOf("PAID") }
-    var notes by remember { mutableStateOf("") }
+    var invoiceRef by remember(initialPurchase) { mutableStateOf(initialPurchase?.invoiceReference ?: "") }
+    var paymentMethod by remember(initialPurchase) { mutableStateOf(initialPurchase?.paymentMethod ?: "Bank Transfer") }
+    var paymentStatus by remember(initialPurchase) { mutableStateOf(initialPurchase?.paymentStatus ?: "PAID") }
+    var notes by remember(initialPurchase) { mutableStateOf(initialPurchase?.notes ?: "") }
 
     // Searchable Product Dropdown & Added items
     var productSearchQuery by remember { mutableStateOf("") }
@@ -277,6 +322,29 @@ fun AddPurchaseSheetContent(
 
     val selectedItems = remember { mutableStateMapOf<Long, Pair<ProductEntity, Double>>() } // productId -> Pair(Product, Qty)
     val priceOverrides = remember { mutableStateMapOf<Long, Double>() } // productId -> Cost Price per unit
+
+    // Load initial purchase items if in edit mode
+    LaunchedEffect(initialPurchase) {
+        if (initialPurchase != null && onLoadItems != null) {
+            val existingItems = onLoadItems(initialPurchase.id)
+            selectedItems.clear()
+            priceOverrides.clear()
+            for (item in existingItems) {
+                val prod = products.find { it.id == item.productId } ?: ProductEntity(
+                    id = item.productId,
+                    name = item.productName,
+                    hindiName = "",
+                    category = "Dry Fruits",
+                    purchasePrice = item.purchasePrice,
+                    sellingPrice = item.purchasePrice,
+                    currentStock = 0.0,
+                    unit = item.unit
+                )
+                selectedItems[item.productId] = Pair(prod, item.quantity)
+                priceOverrides[item.productId] = item.purchasePrice
+            }
+        }
+    }
 
     var isSavingPurchase by remember { mutableStateOf(false) }
 
@@ -397,12 +465,12 @@ fun AddPurchaseSheetContent(
         ) {
             Column {
                 Text(
-                    text = "Record Stock Procurement",
+                    text = if (initialPurchase != null) "Edit Stock Procurement #${initialPurchase.id}" else "Record Stock Procurement",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Inward wholesale batch with supplier tracking",
+                    text = if (initialPurchase != null) "Update procurement items and reconcile stock" else "Inward wholesale batch with supplier tracking",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -952,11 +1020,15 @@ fun AddPurchaseSheetContent(
                     color = Color.White
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Recording Stock Inward...", fontWeight = FontWeight.Bold)
+                Text(if (initialPurchase != null) "Updating Stock Inward..." else "Recording Stock Inward...", fontWeight = FontWeight.Bold)
             } else {
                 Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Save Stock Inward (${selectedItems.size} items • ${CurrencyUtils.formatInr(totalInwardAmount)})", fontWeight = FontWeight.Bold)
+                Text(
+                    if (initialPurchase != null) "Update Stock Inward (${selectedItems.size} items • ${CurrencyUtils.formatInr(totalInwardAmount)})"
+                    else "Save Stock Inward (${selectedItems.size} items • ${CurrencyUtils.formatInr(totalInwardAmount)})",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }

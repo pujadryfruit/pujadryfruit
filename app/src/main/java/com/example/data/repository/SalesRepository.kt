@@ -46,8 +46,26 @@ class SalesRepository(
         saleDao.getPaymentMethodBreakdown(startDate, endDate)
 
     /**
+     * Generates a unique, sequential invoice number formatted as YYYYMMDD001 (e.g., 20260826001, 20260826002).
+     * On the next day, resets sequence to 20260827001.
+     */
+    suspend fun generateNextInvoiceNumber(saleDate: Long = System.currentTimeMillis()): String {
+        val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.ENGLISH)
+        val datePrefix = sdf.format(java.util.Date(saleDate))
+        val latestInvoice = saleDao.getLatestInvoiceNumberForPrefix(datePrefix)
+
+        val nextSeq = if (latestInvoice != null && latestInvoice.startsWith(datePrefix)) {
+            val seqPart = latestInvoice.removePrefix(datePrefix).takeWhile { it.isDigit() }
+            (seqPart.toIntOrNull() ?: 0) + 1
+        } else {
+            1
+        }
+        return String.format(java.util.Locale.ENGLISH, "%s%03d", datePrefix, nextSeq)
+    }
+
+    /**
      * Executes atomic sale checkout:
-     * 1. Inserts Sale & Sale Items
+     * 1. Inserts Sale & Sale Items with unique YYYYMMDD001 invoice number
      * 2. Decrements product inventory stock
      * 3. Records stock audit log
      * 4. Updates or Creates customer stats (total spend, orders, credit balance)
@@ -60,6 +78,15 @@ class SalesRepository(
     ): Long {
         var createdSaleId: Long = 0
         database.withTransaction {
+            // Ensure unique sequential invoice number in YYYYMMDD001 format
+            val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.ENGLISH)
+            val datePrefix = sdf.format(java.util.Date(sale.saleDate))
+            val finalInvoiceNumber = if (sale.invoiceNumber.startsWith(datePrefix) && sale.invoiceNumber.length >= 11 && sale.invoiceNumber.all { it.isDigit() }) {
+                sale.invoiceNumber
+            } else {
+                generateNextInvoiceNumber(sale.saleDate)
+            }
+
             // 1. Resolve Customer
             var targetCustomerId = sale.customerId
             if (targetCustomerId == null && sale.customerMobile.isNotBlank() && sale.customerName != "Walk-in Customer") {
@@ -80,7 +107,7 @@ class SalesRepository(
                 }
             }
 
-            val finalSale = sale.copy(customerId = targetCustomerId)
+            val finalSale = sale.copy(invoiceNumber = finalInvoiceNumber, customerId = targetCustomerId)
             createdSaleId = saleDao.insertSale(finalSale)
 
             // 2. Insert items with sale ID
@@ -102,7 +129,7 @@ class SalesRepository(
                         quantityChanged = -item.quantity,
                         previousStock = currentStock,
                         newStock = newStock,
-                        referenceId = sale.invoiceNumber,
+                        referenceId = finalSale.invoiceNumber,
                         reason = "Sold to ${sale.customerName}"
                     )
                 )

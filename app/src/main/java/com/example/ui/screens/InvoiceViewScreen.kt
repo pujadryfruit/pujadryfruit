@@ -251,11 +251,13 @@ fun InvoiceViewScreen(
                                 painter = painterResource(id = R.drawable.ic_puja_logo),
                                 contentDescription = "Shop Logo",
                                 modifier = Modifier
-                                    .size(56.dp)
+                                    .size(60.dp)
+                                    .border(2.dp, Color(0xFFD4AF37), CircleShape)
+                                    .padding(2.dp)
                                     .clip(CircleShape),
                                 contentScale = ContentScale.Crop
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = shop.shopName.uppercase(),
                                 style = MaterialTheme.typography.titleLarge,
@@ -361,9 +363,11 @@ fun InvoiceViewScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
-                                    .padding(vertical = 6.dp, horizontal = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFB48214).copy(alpha = 0.12f))
+                                    .padding(vertical = 8.dp, horizontal = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     text = "Item",

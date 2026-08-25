@@ -72,6 +72,67 @@ class PurchaseRepository(
         }
         return createdPurchaseId
     }
+
+    /**
+     * Updates an existing Purchase record and adjusts product stock accurately without double-counting.
+     */
+    suspend fun updatePurchase(
+        purchaseId: Long,
+        updatedPurchase: PurchaseEntity,
+        newItems: List<PurchaseItemEntity>
+    ) {
+        database.withTransaction {
+            val oldItems = purchaseDao.getPurchaseItemsSync(purchaseId)
+
+            // 1. Revert previous stock increments
+            for (oldItem in oldItems) {
+                val product = productDao.getProductById(oldItem.productId)
+                val currentStock = product?.currentStock ?: 0.0
+                val revertedStock = currentStock - oldItem.quantity
+                productDao.updateStock(oldItem.productId, -oldItem.quantity)
+                stockAuditDao.insertAudit(
+                    StockAuditEntity(
+                        productId = oldItem.productId,
+                        productName = oldItem.productName,
+                        changeType = "PURCHASE_EDIT_REVERT",
+                        quantityChanged = -oldItem.quantity,
+                        previousStock = currentStock,
+                        newStock = revertedStock,
+                        referenceId = if (updatedPurchase.invoiceReference.isNotBlank()) updatedPurchase.invoiceReference else "PUR-$purchaseId",
+                        reason = "Stock Inward Edited: Reverted old stock"
+                    )
+                )
+            }
+
+            // 2. Delete old items and insert updated items
+            purchaseDao.deletePurchaseItemsByPurchaseId(purchaseId)
+            val mappedNewItems = newItems.map { it.copy(purchaseId = purchaseId) }
+            purchaseDao.insertPurchaseItems(mappedNewItems)
+
+            // 3. Apply new stock increments
+            for (newItem in mappedNewItems) {
+                val product = productDao.getProductById(newItem.productId)
+                val currentStock = product?.currentStock ?: 0.0
+                val appliedStock = currentStock + newItem.quantity
+                productDao.updateStock(newItem.productId, newItem.quantity)
+                stockAuditDao.insertAudit(
+                    StockAuditEntity(
+                        productId = newItem.productId,
+                        productName = newItem.productName,
+                        changeType = "PURCHASE_EDIT_APPLY",
+                        quantityChanged = newItem.quantity,
+                        previousStock = currentStock,
+                        newStock = appliedStock,
+                        referenceId = if (updatedPurchase.invoiceReference.isNotBlank()) updatedPurchase.invoiceReference else "PUR-$purchaseId",
+                        reason = "Stock Inward Edited: Applied updated stock from ${updatedPurchase.supplierName}"
+                    )
+                )
+            }
+
+            // 4. Update the Purchase record
+            purchaseDao.updatePurchase(updatedPurchase.copy(id = purchaseId))
+        }
+    }
 }
 
 class SupplierRepository(
@@ -112,7 +173,8 @@ class SupplierRepository(
 
 class CustomerRepository(
     private val customerDao: CustomerDao,
-    private val creditPaymentDao: CreditPaymentDao
+    private val creditPaymentDao: CreditPaymentDao,
+    private val saleDao: SaleDao
 ) {
     val allCustomers: Flow<List<CustomerEntity>> = customerDao.getAllCustomers()
     val customersWithCredit: Flow<List<CustomerEntity>> = customerDao.getCustomersWithOutstandingCredit()
@@ -134,25 +196,62 @@ class CustomerRepository(
 
     suspend fun updateCustomer(customer: CustomerEntity) = customerDao.updateCustomer(customer)
 
+    suspend fun deleteCustomer(id: Long) = customerDao.deleteCustomerById(id)
+
     fun getPaymentsByCustomer(customerId: Long): Flow<List<CreditPaymentEntity>> =
         creditPaymentDao.getPaymentsByCustomer(customerId)
 
+    suspend fun getPaymentsByCustomerSync(customerId: Long): List<CreditPaymentEntity> =
+        creditPaymentDao.getPaymentsByCustomerSync(customerId)
+
+    suspend fun getAllCreditPaymentsSync(): List<CreditPaymentEntity> =
+        creditPaymentDao.getAllCreditPaymentsSync()
+
+    /**
+     * Records Udhaar repayment:
+     * 1. Inserts Payment record in credit_payments table
+     * 2. Reduces customer's outstanding balance
+     * 3. Allocates payment towards customer's oldest unpaid/partial sales, updating status to PAID or PARTIAL
+     */
     suspend fun recordCreditRepayment(
         customerId: Long,
         amount: Double,
         paymentMethod: String,
         notes: String
-    ) {
-        val customer = customerDao.getCustomerById(customerId) ?: return
+    ): Pair<Long, List<SaleEntity>> {
+        val customer = customerDao.getCustomerById(customerId) ?: return Pair(0L, emptyList())
         val payment = CreditPaymentEntity(
             customerId = customerId,
             customerName = customer.name,
             amount = amount,
             paymentMethod = paymentMethod,
-            notes = notes
+            notes = notes,
+            paymentDate = System.currentTimeMillis()
         )
-        creditPaymentDao.insertPayment(payment)
+        val paymentId = creditPaymentDao.insertPayment(payment)
         customerDao.reduceCustomerCredit(customerId, amount)
+
+        // Allocate repayment across unpaid / partial sales
+        val updatedSales = mutableListOf<SaleEntity>()
+        var remainingPayment = amount
+        val unpaidSales = saleDao.getUnpaidSalesForCustomer(customerId)
+        for (sale in unpaidSales) {
+            if (remainingPayment <= 0.0) break
+            val paymentForSale = minOf(remainingPayment, sale.balanceAmount)
+            val newPaid = sale.paidAmount + paymentForSale
+            val newBalance = (sale.balanceAmount - paymentForSale).coerceAtLeast(0.0)
+            val newStatus = if (newBalance <= 0.0) "PAID" else "PARTIAL"
+            val updated = sale.copy(
+                paidAmount = newPaid,
+                balanceAmount = newBalance,
+                paymentStatus = newStatus
+            )
+            saleDao.updateSale(updated)
+            updatedSales.add(updated)
+            remainingPayment -= paymentForSale
+        }
+
+        return Pair(paymentId, updatedSales)
     }
 }
 

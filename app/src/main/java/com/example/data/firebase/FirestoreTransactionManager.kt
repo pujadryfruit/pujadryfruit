@@ -2,7 +2,9 @@ package com.example.data.firebase
 
 import android.util.Log
 import com.example.data.firebase.models.*
+import com.example.data.local.entities.SaleEntity
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -161,7 +163,13 @@ class FirestoreTransactionManager(
             Log.d(TAG, "Sale transaction $saleId executed atomically in Firestore")
             Result.success(saleId)
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing sale transaction via runTransaction: ${e.message}, attempting direct batch write fallback", e)
+            val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermissionDenied) {
+                Log.d(TAG, "Sale saved locally (Firestore cloud sync deferred: login required for cloud permissions)")
+                return@withContext Result.success("LOCAL_OFFLINE")
+            }
+            Log.w(TAG, "Error executing sale transaction via runTransaction: ${e.message}, attempting direct batch write fallback")
             try {
                 // Direct batch write fallback
                 val saleRef = firestore.collection("sales").document()
@@ -211,8 +219,15 @@ class FirestoreTransactionManager(
                 Log.d(TAG, "Sale transaction $saleId saved directly via batch write")
                 Result.success(saleId)
             } catch (fallbackEx: Exception) {
-                Log.e(TAG, "Direct batch fallback for sale failed: ${fallbackEx.message}", fallbackEx)
-                Result.failure(fallbackEx)
+                val isFallbackPermDenied = fallbackEx.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                    (fallbackEx is com.google.firebase.firestore.FirebaseFirestoreException && fallbackEx.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+                if (isFallbackPermDenied) {
+                    Log.d(TAG, "Sale fallback deferred: login required for cloud sync. Saved locally in Room.")
+                    Result.success("LOCAL_OFFLINE")
+                } else {
+                    Log.w(TAG, "Direct batch fallback for sale cached locally: ${fallbackEx.message}")
+                    Result.failure(fallbackEx)
+                }
             }
         }
     }
@@ -231,6 +246,10 @@ class FirestoreTransactionManager(
         supplierId: String? = null,
         userId: String = FirebaseManager.currentUserId
     ): Result<String> = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) {
+            Log.d(TAG, "Purchase saved locally (Firestore cloud sync skipped: local offline mode)")
+            return@withContext Result.success("LOCAL_OFFLINE")
+        }
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
             val purchaseRef = firestore.collection("purchases").document()
@@ -339,19 +358,32 @@ class FirestoreTransactionManager(
             Log.d(TAG, "Purchase transaction $purchaseId executed atomically in Firestore")
             Result.success(purchaseId)
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing purchase transaction: ${e.message}", e)
-            Result.failure(e)
+            val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermissionDenied) {
+                Log.d(TAG, "Purchase saved locally (Firestore cloud sync deferred: login required for cloud permissions)")
+                Result.success("LOCAL_OFFLINE")
+            } else {
+                Log.w(TAG, "Purchase cloud sync cached locally: ${e.message}")
+                Result.failure(e)
+            }
         }
     }
 
     /**
-     * Records a payment against customer Udhaar or supplier debt atomically.
+     * Records a payment against customer Udhaar or supplier debt atomically,
+     * and updates any affected sales/invoices payment statuses.
      */
     suspend fun executePaymentTransaction(
         shopId: String,
         paymentDoc: PaymentDoc,
+        updatedSales: List<SaleEntity> = emptyList(),
         userId: String = FirebaseManager.currentUserId
     ): Result<String> = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) {
+            Log.d(TAG, "Payment saved locally (Firestore cloud sync skipped: local offline mode)")
+            return@withContext Result.success("LOCAL_OFFLINE")
+        }
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
             val paymentRef = firestore.collection("payments").document()
@@ -394,10 +426,138 @@ class FirestoreTransactionManager(
                 }
             }.await()
 
+            // Update affected sales in Firestore
+            if (updatedSales.isNotEmpty()) {
+                val batch = firestore.batch()
+                for (sale in updatedSales) {
+                    val salesQuery = firestore.collection("sales")
+                        .whereEqualTo("shopId", shopId)
+                        .whereEqualTo("invoiceNumber", sale.invoiceNumber)
+                        .get()
+                        .await()
+
+                    for (doc in salesQuery.documents) {
+                        batch.update(doc.reference, mapOf(
+                            "paidAmount" to sale.paidAmount,
+                            "balanceAmount" to sale.balanceAmount,
+                            "paymentStatus" to sale.paymentStatus,
+                            "updatedAt" to now
+                        ))
+                    }
+
+                    val invQuery = firestore.collection("invoices")
+                        .whereEqualTo("shopId", shopId)
+                        .whereEqualTo("invoiceNumber", sale.invoiceNumber)
+                        .get()
+                        .await()
+
+                    for (doc in invQuery.documents) {
+                        batch.update(doc.reference, mapOf(
+                            "paymentStatus" to sale.paymentStatus,
+                            "updatedAt" to now
+                        ))
+                    }
+                }
+                batch.commit().await()
+            }
+
             Result.success(paymentId)
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing payment transaction: ${e.message}", e)
-            Result.failure(e)
+            val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermissionDenied) {
+                Log.d(TAG, "Payment saved locally (Firestore cloud sync deferred: login required for cloud permissions)")
+                Result.success("LOCAL_OFFLINE")
+            } else {
+                Log.w(TAG, "Payment cloud sync cached locally: ${e.message}")
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Updates an existing Purchase record and adjusts product stock accurately in Firestore without double-counting.
+     */
+    suspend fun executePurchaseUpdateTransaction(
+        shopId: String,
+        purchaseDoc: PurchaseDoc,
+        newItems: List<PurchaseItemDoc>,
+        oldItems: List<PurchaseItemDoc>,
+        supplierId: String? = null,
+        userId: String = FirebaseManager.currentUserId
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) {
+            Log.d(TAG, "Purchase update saved locally (Firestore cloud sync skipped: local offline mode)")
+            return@withContext Result.success("LOCAL_OFFLINE")
+        }
+        val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
+        try {
+            val now = System.currentTimeMillis()
+            val purchaseRef = firestore.collection("purchases").document(purchaseDoc.id)
+
+            // Revert old item stock and apply new item stock
+            val batch = firestore.batch()
+            batch.set(purchaseRef, purchaseDoc.copy(updatedAt = now), SetOptions.merge())
+
+            // Revert old items stock
+            for (oldItem in oldItems) {
+                if (oldItem.productId.isNotEmpty()) {
+                    val prodRef = firestore.collection("products").document(oldItem.productId)
+                    val prodSnap = prodRef.get().await()
+                    if (prodSnap.exists()) {
+                        val currentStock = prodSnap.getDouble("currentStock") ?: 0.0
+                        val revertedStock = currentStock - oldItem.quantity
+                        batch.update(prodRef, mapOf(
+                            "currentStock" to revertedStock,
+                            "updatedAt" to now
+                        ))
+                    }
+                }
+            }
+
+            // Apply new items stock
+            for (newItem in newItems) {
+                if (newItem.productId.isNotEmpty()) {
+                    val prodRef = firestore.collection("products").document(newItem.productId)
+                    val prodSnap = prodRef.get().await()
+                    val currentStock = if (prodSnap.exists()) prodSnap.getDouble("currentStock") ?: 0.0 else 0.0
+                    val appliedStock = currentStock + newItem.quantity
+                    batch.update(prodRef, mapOf(
+                        "currentStock" to appliedStock,
+                        "purchasePrice" to newItem.purchasePrice,
+                        "updatedAt" to now
+                    ))
+                }
+            }
+
+            // Update purchase items
+            val oldItemsSnap = firestore.collection("purchaseItems")
+                .whereEqualTo("purchaseId", purchaseDoc.id)
+                .get()
+                .await()
+
+            for (oldDoc in oldItemsSnap.documents) {
+                batch.delete(oldDoc.reference)
+            }
+
+            for (newItem in newItems) {
+                val itemRef = firestore.collection("purchaseItems").document()
+                batch.set(itemRef, newItem.copy(id = itemRef.id, purchaseId = purchaseDoc.id, shopId = shopId, createdAt = now, updatedAt = now))
+            }
+
+            batch.commit().await()
+            Log.d(TAG, "Purchase ${purchaseDoc.id} updated in Firestore successfully")
+            Result.success(purchaseDoc.id)
+        } catch (e: Exception) {
+            val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermissionDenied) {
+                Log.d(TAG, "Purchase update saved locally (Firestore cloud sync deferred: login required for cloud permissions)")
+                Result.success("LOCAL_OFFLINE")
+            } else {
+                Log.w(TAG, "Purchase update cloud sync cached locally: ${e.message}")
+                Result.failure(e)
+            }
         }
     }
 }

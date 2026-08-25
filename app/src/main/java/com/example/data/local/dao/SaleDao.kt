@@ -40,6 +40,12 @@ interface SaleDao {
     @Query("SELECT * FROM sales WHERE customerId = :customerId ORDER BY saleDate DESC")
     fun getSalesByCustomer(customerId: Long): Flow<List<SaleEntity>>
 
+    @Query("SELECT * FROM sales WHERE customerId = :customerId AND balanceAmount > 0 AND isCancelled = 0 ORDER BY saleDate ASC")
+    suspend fun getUnpaidSalesForCustomer(customerId: Long): List<SaleEntity>
+
+    @Query("SELECT invoiceNumber FROM sales WHERE invoiceNumber LIKE :datePrefix || '%' ORDER BY invoiceNumber DESC LIMIT 1")
+    suspend fun getLatestInvoiceNumberForPrefix(datePrefix: String): String?
+
     @Query("SELECT * FROM sales WHERE id = :id")
     suspend fun getSaleById(id: Long): SaleEntity?
 

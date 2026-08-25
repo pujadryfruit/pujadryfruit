@@ -62,11 +62,32 @@ interface CreditPaymentDao {
     @Query("SELECT * FROM credit_payments ORDER BY paymentDate DESC")
     fun getAllCreditPayments(): Flow<List<CreditPaymentEntity>>
 
+    @Query("SELECT * FROM credit_payments ORDER BY paymentDate DESC")
+    suspend fun getAllCreditPaymentsSync(): List<CreditPaymentEntity>
+
     @Query("SELECT * FROM credit_payments WHERE customerId = :customerId ORDER BY paymentDate DESC")
     fun getPaymentsByCustomer(customerId: Long): Flow<List<CreditPaymentEntity>>
 
+    @Query("SELECT * FROM credit_payments WHERE customerId = :customerId ORDER BY paymentDate DESC")
+    suspend fun getPaymentsByCustomerSync(customerId: Long): List<CreditPaymentEntity>
+
+    @Query("SELECT * FROM credit_payments WHERE id = :id")
+    suspend fun getPaymentById(id: Long): CreditPaymentEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPayment(payment: CreditPaymentEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllPayments(payments: List<CreditPaymentEntity>)
+
+    @Query("DELETE FROM credit_payments WHERE id = :id")
+    suspend fun deletePaymentById(id: Long)
+
+    @Query("DELETE FROM credit_payments WHERE id NOT IN (:validIds)")
+    suspend fun deletePaymentsNotIn(validIds: List<Long>)
+
+    @Query("DELETE FROM credit_payments")
+    suspend fun clearAllPayments()
 }
 
 @Dao
