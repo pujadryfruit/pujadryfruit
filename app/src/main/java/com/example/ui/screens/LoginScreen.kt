@@ -50,6 +50,8 @@ fun LoginScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val authState by viewModel.authState.collectAsStateWithLifecycle()
+    val shopProfile by viewModel.shopProfile.collectAsStateWithLifecycle()
+    val isPinConfigured = shopProfile?.isPinSecurityEnabled == true && !shopProfile?.securityPin.isNullOrBlank()
 
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -269,107 +271,64 @@ fun LoginScreen(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
             ) {
+                var selectedAuthTab by remember { mutableIntStateOf(0) } // 0 = Email, 1 = PIN
+                var enteredPin by remember { mutableStateOf("") }
+                var pinError by remember { mutableStateOf<String?>(null) }
+
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(24.dp),
+                        .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Email Field
-                    OutlinedTextField(
-                        value = email,
-                        onValueChange = {
-                            email = it
-                            emailError = null
-                            viewModel.clearAuthError()
-                        },
-                        label = { Text("Email Address") },
-                        placeholder = { Text("Enter your registered email") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Email, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        },
-                        trailingIcon = {
-                            if (email.isNotEmpty()) {
-                                IconButton(onClick = {
-                                    email = ""
-                                    viewModel.clearAuthError()
-                                }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear email", modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        },
-                        isError = emailError != null,
-                        supportingText = emailError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Email,
-                            imeAction = ImeAction.Next
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("email_input_field"),
-                        shape = RoundedCornerShape(14.dp)
-                    )
+                    val effectiveAuthTab = if (isPinConfigured) selectedAuthTab else 0
 
-                    // Password Field
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = {
-                            password = it
-                            passwordError = null
-                            viewModel.clearAuthError()
-                        },
-                        label = { Text("Password") },
-                        placeholder = { Text("Enter your password") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = { showPassword = !showPassword }) {
-                                Icon(
-                                    imageVector = if (showPassword) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                    contentDescription = if (showPassword) "Hide password" else "Show password",
-                                    tint = MaterialTheme.colorScheme.outline
-                                )
-                            }
-                        },
-                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                        isError = passwordError != null,
-                        supportingText = passwordError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Password,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { handleLogin() }),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("password_input_field"),
-                        shape = RoundedCornerShape(14.dp)
-                    )
-
-                    // Forgot Password Row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(
-                            onClick = {
-                                forgotEmail = email
-                                showForgotPasswordDialog = true
-                            },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                    // Auth Mode Selector Tabs (Only shown when PIN has been configured & enabled in Settings)
+                    if (isPinConfigured) {
+                        TabRow(
+                            selectedTabIndex = effectiveAuthTab,
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            contentColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
                         ) {
-                            Text(
-                                text = "Forgot Password?",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
+                            Tab(
+                                selected = effectiveAuthTab == 0,
+                                onClick = {
+                                    selectedAuthTab = 0
+                                    viewModel.clearAuthError()
+                                },
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Text("Email Login", fontWeight = if (effectiveAuthTab == 0) FontWeight.Bold else FontWeight.Normal)
+                                    }
+                                }
+                            )
+                            Tab(
+                                selected = effectiveAuthTab == 1,
+                                onClick = {
+                                    selectedAuthTab = 1
+                                    viewModel.clearAuthError()
+                                },
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(Icons.Default.Pin, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Text("PIN Access", fontWeight = if (effectiveAuthTab == 1) FontWeight.Bold else FontWeight.Normal)
+                                    }
+                                }
                             )
                         }
                     }
 
-                    // Error Message Display with Retry
+                    // Error Message Display
                     if (authState is AuthState.Error) {
                         val errorMsg = (authState as AuthState.Error).message
                         Surface(
@@ -402,134 +361,321 @@ fun LoginScreen(
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.End
                                 ) {
-                                    Button(
-                                        onClick = {
-                                            viewModel.clearAuthError()
-                                            handleLogin()
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                    TextButton(
+                                        onClick = { viewModel.clearAuthError() }
                                     ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Try Again", fontSize = 12.sp, color = MaterialTheme.colorScheme.onError)
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            viewModel.clearAuthError()
-                                            viewModel.enterOfflineAdmin()
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Offline Admin", fontSize = 12.sp)
+                                        Text("Dismiss", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Main Login Button
-                    Button(
-                        onClick = { handleLogin() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .testTag("login_button"),
-                        enabled = !isLoading,
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = GeometricPrimary
+                    if (effectiveAuthTab == 0) {
+                        // Email Field
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = {
+                                email = it
+                                emailError = null
+                                viewModel.clearAuthError()
+                            },
+                            label = { Text("Email Address") },
+                            placeholder = { Text("Enter your registered email") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Email, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            },
+                            trailingIcon = {
+                                if (email.isNotEmpty()) {
+                                    IconButton(onClick = {
+                                        email = ""
+                                        viewModel.clearAuthError()
+                                    }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear email", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            },
+                            isError = emailError != null,
+                            supportingText = emailError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Email,
+                                imeAction = ImeAction.Next
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("email_input_field"),
+                            shape = RoundedCornerShape(14.dp)
                         )
-                    ) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(22.dp),
-                                strokeWidth = 2.5.dp,
-                                color = Color.White
+
+                        // Password Field
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = {
+                                password = it
+                                passwordError = null
+                                viewModel.clearAuthError()
+                            },
+                            label = { Text("Password") },
+                            placeholder = { Text("Enter your password") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            },
+                            trailingIcon = {
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (showPassword) "Hide password" else "Show password",
+                                        tint = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            },
+                            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                            isError = passwordError != null,
+                            supportingText = passwordError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(onDone = { handleLogin() }),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("password_input_field"),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+
+                        // Forgot Password Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    forgotEmail = email
+                                    showForgotPasswordDialog = true
+                                },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "Forgot Password?",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        // Main Login Button
+                        Button(
+                            onClick = { handleLogin() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("login_button"),
+                            enabled = !isLoading,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = GeometricPrimary
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Authenticating...", color = Color.White, fontWeight = FontWeight.Bold)
-                        } else {
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("Signing in...", color = Color.White, fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Login,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Sign In with Password",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Divider
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            HorizontalDivider(modifier = Modifier.weight(1f))
+                            Text(
+                                text = "OR",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            )
+                            HorizontalDivider(modifier = Modifier.weight(1f))
+                        }
+
+                        // Google Sign-In Button
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.clearAuthError()
+                                viewModel.signInWithGoogle(context)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("google_signin_login_button"),
+                            enabled = !isLoading,
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.Login,
+                                imageVector = Icons.Default.AccountCircle,
                                 contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Sign In to Shop",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                text = "Continue with Google",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
-                    }
+                    } else {
+                        // PIN ACCESS MODE
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                text = "Enter 4-Digit Security PIN",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Authorized shop counter access with PIN",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                textAlign = TextAlign.Center
+                            )
 
-                    // Divider
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        HorizontalDivider(modifier = Modifier.weight(1f))
-                        Text(
-                            text = "OR",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        )
-                        HorizontalDivider(modifier = Modifier.weight(1f))
-                    }
+                            // 4 PIN Dots
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            ) {
+                                for (i in 0 until 4) {
+                                    val isFilled = i < enteredPin.length
+                                    Box(
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (isFilled) GeometricPrimary
+                                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                            )
+                                    )
+                                }
+                            }
 
-                    // Google Sign-In Button
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.clearAuthError()
-                            viewModel.signInWithGoogle(context)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("google_signin_login_button"),
-                        enabled = !isLoading,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AccountCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Continue with Google",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                            // Interactive Numeric Keypad
+                            val keys = listOf(
+                                listOf("1", "2", "3"),
+                                listOf("4", "5", "6"),
+                                listOf("7", "8", "9"),
+                                listOf("C", "0", "⌫")
+                            )
+
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                for (row in keys) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        for (key in row) {
+                                            FilledTonalButton(
+                                                onClick = {
+                                                    viewModel.clearAuthError()
+                                                    when (key) {
+                                                        "C" -> enteredPin = ""
+                                                        "⌫" -> if (enteredPin.isNotEmpty()) enteredPin = enteredPin.dropLast(1)
+                                                        else -> {
+                                                            if (enteredPin.length < 4) {
+                                                                val newPin = enteredPin + key
+                                                                enteredPin = newPin
+                                                                if (newPin.length == 4) {
+                                                                    viewModel.signInWithPin(newPin)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(48.dp),
+                                                shape = RoundedCornerShape(12.dp),
+                                                colors = ButtonDefaults.filledTonalButtonColors(
+                                                    containerColor = if (key == "C" || key == "⌫")
+                                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                                                    else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = key,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (enteredPin.length == 4) {
+                                        viewModel.signInWithPin(enteredPin)
+                                    } else {
+                                        Toast.makeText(context, "Please enter full 4-digit PIN", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                enabled = enteredPin.length == 4 && !isLoading,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = GeometricPrimary)
+                            ) {
+                                if (isLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Verifying...", color = Color.White)
+                                } else {
+                                    Icon(Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Unlock with PIN", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-
-            // Direct offline bypass
-            TextButton(
-                onClick = {
-                    viewModel.clearAuthError()
-                    viewModel.enterOfflineAdmin()
-                }
-            ) {
-                Text(
-                    text = "Direct Admin Access (Offline Mode)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.outline
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
 
             // Cloud Status Footnote
             Text(

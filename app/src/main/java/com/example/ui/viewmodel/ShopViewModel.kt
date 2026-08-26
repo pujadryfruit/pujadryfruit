@@ -894,25 +894,36 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun signInWithPin(enteredPin: String) {
+        viewModelScope.launch {
+            val profile = shopProfile.value
+            if (profile == null || !profile.isPinSecurityEnabled || profile.securityPin.isBlank()) {
+                _uiEventMessage.emit("PIN access is not configured. Please log in with Email & Password first and enable PIN in Shop Settings.")
+                return@launch
+            }
+            _uiEventMessage.emit("Verifying Security PIN...")
+            val currentPin = profile.securityPin
+            val result = authService.signInWithPin(enteredPin, currentPin)
+            if (result.isSuccess) {
+                _isUnlocked.value = true
+                _uiEventMessage.emit("Security PIN verified! Welcome.")
+            } else {
+                _uiEventMessage.emit(result.exceptionOrNull()?.message ?: "Incorrect PIN")
+            }
+        }
+    }
+
     fun loginWithDefaultOwner(pass: String = "Rohit@") {
         viewModelScope.launch {
             _uiEventMessage.emit("Signing in as Owner...")
             val result = authService.signInWithEmailPassword("rohit21oc@gmail.com", pass)
             if (result.isSuccess) {
+                _isUnlocked.value = true
                 _uiEventMessage.emit("Welcome Rohit Kumar (Owner)!")
                 syncRepo.performFullCloudSync()
             } else {
-                // If cloud is unavailable, enter offline admin mode
-                authService.enterOfflineAdmin()
-                _uiEventMessage.emit("Welcome Rohit Kumar (Offline Mode)")
+                _uiEventMessage.emit("Owner login failed: ${result.exceptionOrNull()?.localizedMessage}")
             }
-        }
-    }
-
-    fun enterOfflineAdmin() {
-        viewModelScope.launch {
-            authService.enterOfflineAdmin()
-            _uiEventMessage.emit("Entered as Owner / Admin")
         }
     }
 

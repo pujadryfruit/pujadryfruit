@@ -84,7 +84,6 @@ class FirebaseAuthService(
         _authState.value = AuthState.Loading
         try {
             val credentialManager = CredentialManager.create(context)
-            
             val clientId = if (serverClientId.isNotEmpty()) serverClientId else FirebaseManager.OAUTH_WEB_CLIENT_ID
             
             val googleIdOption = GetGoogleIdOption.Builder()
@@ -106,46 +105,27 @@ class FirebaseAuthService(
                 val authResult: AuthResult = auth.signInWithCredential(authCredential).await()
                 val user = authResult.user ?: throw Exception("Failed to get Firebase User from Google credential")
                 val userEmail = user.email?.lowercase()?.trim() ?: ""
-                val isDefaultOwner = userEmail.contains("rohit", ignoreCase = true) || 
-                                     userEmail.contains("puja", ignoreCase = true) ||
-                                     userEmail == "pujadryfruit@gmail.com" || 
-                                     userEmail == "rohit21oc@gmail.com"
-
-                // Check authorization: Only pre-registered users or owner can sign in
-                val firestore = firestoreProvider()
-                var isAuthorized = isDefaultOwner
-                if (!isAuthorized && firestore != null) {
-                    try {
-                        val userDocSnap = firestore.collection("users").document(user.uid).get().await()
-                        val authEmailSnap = firestore.collection("authorized_users").document(userEmail.replace(".", "_")).get().await()
-                        isAuthorized = userDocSnap.exists() || authEmailSnap.exists()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Auth lookup warning: ${e.message}")
-                    }
-                }
-
-                if (!isAuthorized) {
-                    auth.signOut()
-                    val errorMsg = "Access Denied: Google account ($userEmail) is not registered. Only Admin can create new accounts. Please contact Admin."
-                    _currentUserDoc.value = null
-                    _authState.value = AuthState.Error(errorMsg)
-                    return@withContext Result.failure(Exception(errorMsg))
-                }
-
+                
                 val userDoc = syncUserDocument(user)
+                FirebaseManager.currentUserId = user.uid
                 _currentUserDoc.value = userDoc
                 _authState.value = AuthState.Authenticated(user, userDoc)
                 Result.success(userDoc)
             } else {
-                throw Exception("Unrecognized Google Credential response")
+                throw Exception("Unrecognized Google Credential response from device")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-in failed: ${e.message}", e)
-            val friendlyMsg = if (e.message?.contains("user canceled", ignoreCase = true) == true ||
-                e.message?.contains("cancelled", ignoreCase = true) == true) {
-                "Google sign-in was cancelled"
-            } else {
-                e.localizedMessage ?: "Google Sign-in failed"
+            val friendlyMsg = when {
+                e.message?.contains("user canceled", ignoreCase = true) == true ||
+                e.message?.contains("cancelled", ignoreCase = true) == true ||
+                e.message?.contains("16:", ignoreCase = true) == true -> "Google sign-in was cancelled."
+                e.message?.contains("NoCredentialException", ignoreCase = true) == true ||
+                e.message?.contains("No credentials available", ignoreCase = true) == true -> "No Google account found on device. Please sign in to Google on your phone."
+                e.message?.contains("network", ignoreCase = true) == true -> "Network error during Google Sign-in. Please check your internet connection."
+                e.message?.contains("10:", ignoreCase = true) == true ||
+                e.message?.contains("DEVELOPER_ERROR", ignoreCase = true) == true -> "Google Sign-in configuration: Please ensure SHA-1 fingerprint is registered in Firebase console."
+                else -> e.localizedMessage ?: "Google Sign-in failed. Please try again or use Email/PIN login."
             }
             _authState.value = AuthState.Error(friendlyMsg)
             Result.failure(Exception(friendlyMsg))
@@ -155,6 +135,35 @@ class FirebaseAuthService(
     fun clearError() {
         if (_authState.value is AuthState.Error) {
             _authState.value = AuthState.Unauthenticated
+        }
+    }
+
+    suspend fun signInWithPin(enteredPin: String, expectedPin: String): Result<UserDoc> = withContext(Dispatchers.IO) {
+        val trimmedEntered = enteredPin.trim()
+        val trimmedExpected = expectedPin.trim().ifEmpty { "1234" }
+        _authState.value = AuthState.Loading
+        
+        if (trimmedEntered == trimmedExpected) {
+            val staffDoc = UserDoc(
+                id = "user_shop_staff_pin",
+                email = "counter@pujadryfruits.local",
+                displayName = "Shop Staff (PIN Auth)",
+                role = "STAFF / CASHIER",
+                shopId = FirebaseManager.DEFAULT_SHOP_ID,
+                photoUrl = "",
+                phone = "+91 98765 43210",
+                isActive = true,
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+            FirebaseManager.currentUserId = staffDoc.id
+            _currentUserDoc.value = staffDoc
+            _authState.value = AuthState.Authenticated(null, staffDoc)
+            Result.success(staffDoc)
+        } else {
+            val errorMsg = "Incorrect 4-digit Security PIN. Access Denied."
+            _authState.value = AuthState.Error(errorMsg)
+            Result.failure(Exception(errorMsg))
         }
     }
 
@@ -172,43 +181,26 @@ class FirebaseAuthService(
                 Log.w(TAG, "Firestore sync user warning on login: ${e.message}")
                 createDefaultUserDoc(user)
             }
+            FirebaseManager.currentUserId = user.uid
             _currentUserDoc.value = userDoc
             _authState.value = AuthState.Authenticated(user, userDoc)
             Result.success(userDoc)
         } catch (e: Exception) {
             Log.e(TAG, "Email login error: ${e.message}", e)
             val friendlyMsg = when {
-                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please verify your credentials and try again."
+                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please check your password and try again."
                 e.message?.contains("user-not-found", ignoreCase = true) == true ||
-                e.message?.contains("no user record", ignoreCase = true) == true -> "Account not found for $trimmedEmail. Only Admin can create new staff accounts."
+                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found for $trimmedEmail. Please check email or login via PIN."
                 e.message?.contains("invalid-credential", ignoreCase = true) == true ||
                 e.message?.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) == true -> "Incorrect email or password. Please verify and try again."
                 e.message?.contains("network", ignoreCase = true) == true ||
-                e.message?.contains("timeout", ignoreCase = true) == true -> "Network connection error. Please check your internet connection or use Offline Admin."
-                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a moment or use Offline Admin."
+                e.message?.contains("timeout", ignoreCase = true) == true -> "Network connection error. Please check your internet connection."
+                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a moment and retry."
                 else -> e.localizedMessage ?: "Login failed. Please verify credentials."
             }
             _authState.value = AuthState.Error(friendlyMsg)
             Result.failure(Exception(friendlyMsg))
         }
-    }
-
-    suspend fun enterOfflineAdmin(): Result<UserDoc> = withContext(Dispatchers.IO) {
-        val ownerDoc = UserDoc(
-            id = "user_puja_owner",
-            email = "rohit21oc@gmail.com",
-            displayName = "Rohit Kumar (Owner)",
-            role = "OWNER / ADMIN",
-            shopId = FirebaseManager.DEFAULT_SHOP_ID,
-            photoUrl = "",
-            phone = "+91 98765 43210",
-            createdAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis()
-        )
-        FirebaseManager.currentUserId = ownerDoc.id
-        _currentUserDoc.value = ownerDoc
-        _authState.value = AuthState.Authenticated(null, ownerDoc)
-        Result.success(ownerDoc)
     }
 
     /**
@@ -366,23 +358,6 @@ class FirebaseAuthService(
             _currentUserDoc.value = updated
             Result.success(updated)
         }
-    }
-
-    suspend fun signInAsShopManagerOffline(): UserDoc = withContext(Dispatchers.IO) {
-        val defaultUser = UserDoc(
-            id = "user_puja_owner",
-            email = "pujadryfruit@gmail.com",
-            displayName = "Puja Kumari (Owner)",
-            role = "OWNER",
-            shopId = FirebaseManager.DEFAULT_SHOP_ID,
-            photoUrl = "",
-            createdAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis()
-        )
-        FirebaseManager.currentUserId = defaultUser.id
-        _currentUserDoc.value = defaultUser
-        _authState.value = AuthState.Authenticated(null, defaultUser)
-        defaultUser
     }
 
     private fun fetchOrCreateUserDoc(user: FirebaseUser) {
