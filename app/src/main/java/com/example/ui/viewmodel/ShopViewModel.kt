@@ -473,6 +473,13 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             // Sync atomically to Firebase Firestore in background
             launch {
                 syncRepo.syncSaleToCloud(saleEntity.copy(id = saleId), saleItems)
+                // Sync updated products to ensure exact stock consistency
+                for (item in saleItems) {
+                    val updatedProd = productRepo.getProductById(item.productId)
+                    if (updatedProd != null) {
+                        syncRepo.syncProductToCloud(updatedProd)
+                    }
+                }
             }
 
             onSuccess(saleId, invoiceNo)
@@ -491,9 +498,18 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelSale(saleId: Long, reason: String) {
         viewModelScope.launch {
+            val saleItems = salesRepo.getSaleItemsSync(saleId)
             salesRepo.cancelSale(saleId, reason)
             loadActiveInvoice(saleId)
             _uiEventMessage.emit("Sale cancelled and inventory restored!")
+            launch {
+                for (item in saleItems) {
+                    val updatedProd = productRepo.getProductById(item.productId)
+                    if (updatedProd != null) {
+                        syncRepo.syncProductToCloud(updatedProd)
+                    }
+                }
+            }
         }
     }
 
@@ -569,19 +585,19 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     fun adjustStock(productId: Long, diff: Double, reason: String) {
         viewModelScope.launch {
-            val product = productRepo.getProductById(productId)
             productRepo.adjustStock(productId, diff, reason)
+            val updatedProduct = productRepo.getProductById(productId)
             _uiEventMessage.emit("Stock adjusted successfully")
-            if (product != null) {
-                val newStock = product.currentStock + diff
+            if (updatedProduct != null) {
                 launch {
                     syncRepo.syncStockAdjustmentToCloud(
                         productId = productId,
-                        productName = product.name,
+                        productName = updatedProduct.name,
                         diff = diff,
-                        newStock = newStock,
+                        newStock = updatedProduct.currentStock,
                         reason = reason
                     )
+                    syncRepo.syncProductToCloud(updatedProduct)
                 }
             }
         }
@@ -662,6 +678,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             // Sync purchase to Firebase Firestore atomically in background
             launch {
                 syncRepo.syncPurchaseToCloud(purchase.copy(id = purchaseId), purchaseItems)
+                for (item in purchaseItems) {
+                    val updatedProd = productRepo.getProductById(item.productId)
+                    if (updatedProd != null) {
+                        syncRepo.syncProductToCloud(updatedProd)
+                    }
+                }
             }
             onComplete?.invoke(true)
         }
@@ -709,6 +731,12 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             _uiEventMessage.emit("Stock inward #${purchaseId} updated successfully!")
             launch {
                 syncRepo.syncPurchaseUpdateToCloud(updatedPurchase, purchaseItems, oldItems)
+                for (item in purchaseItems) {
+                    val updatedProd = productRepo.getProductById(item.productId)
+                    if (updatedProd != null) {
+                        syncRepo.syncProductToCloud(updatedProd)
+                    }
+                }
             }
             onComplete?.invoke(true)
         }

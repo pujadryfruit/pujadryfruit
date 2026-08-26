@@ -13,6 +13,8 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.AuthResult
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
@@ -188,15 +190,17 @@ class FirebaseAuthService(
         } catch (e: Exception) {
             Log.e(TAG, "Email login error: ${e.message}", e)
             val friendlyMsg = when {
-                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please check your password and try again."
+                e is FirebaseAuthInvalidCredentialsException ||
+                e.message?.contains("credential", ignoreCase = true) == true ||
+                e.message?.contains("invalid", ignoreCase = true) == true ||
+                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect email or password. Please check your credentials or use 'Continue with Google'."
+                e is FirebaseAuthInvalidUserException ||
                 e.message?.contains("user-not-found", ignoreCase = true) == true ||
-                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found for $trimmedEmail. Please check email or login via PIN."
-                e.message?.contains("invalid-credential", ignoreCase = true) == true ||
-                e.message?.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) == true -> "Incorrect email or password. Please verify and try again."
+                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found for $trimmedEmail. Please check your email address or use 'Continue with Google'."
                 e.message?.contains("network", ignoreCase = true) == true ||
                 e.message?.contains("timeout", ignoreCase = true) == true -> "Network connection error. Please check your internet connection."
-                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a moment and retry."
-                else -> e.localizedMessage ?: "Login failed. Please verify credentials."
+                e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a few moments and try again."
+                else -> "Incorrect email or password. Please verify and try again."
             }
             _authState.value = AuthState.Error(friendlyMsg)
             Result.failure(Exception(friendlyMsg))

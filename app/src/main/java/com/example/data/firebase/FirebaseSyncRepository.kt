@@ -100,25 +100,35 @@ class FirebaseSyncRepository(
                                                 database.productDao().archiveProduct(targetId)
                                             }
                                         } else {
-                                            val entity = ProductEntity(
-                                                id = targetId,
-                                                sku = doc.sku,
-                                                name = doc.name,
-                                                hindiName = doc.hindiName,
-                                                category = doc.category,
-                                                unit = doc.unit,
-                                                purchasePrice = doc.purchasePrice,
-                                                sellingPrice = doc.sellingPrice,
-                                                currentStock = doc.currentStock,
-                                                minStockLevel = doc.minStockLevel,
-                                                supplierName = doc.supplierName,
-                                                description = doc.description,
-                                                colorHex = doc.colorHex,
-                                                isArchived = doc.isArchived,
-                                                createdAt = doc.createdAt,
-                                                updatedAt = doc.updatedAt
-                                            )
-                                            database.productDao().insertProduct(entity)
+                                            // Check if local product has newer updates than the incoming Firestore doc
+                                            if (existingProduct != null && existingProduct.updatedAt > doc.updatedAt) {
+                                                // Local product has newer changes (e.g. recent sales/adjustments).
+                                                // Prevent local stock from being overridden by stale remote stock.
+                                                // Sync the latest local product to Firestore.
+                                                syncScope.launch {
+                                                    syncProductToCloud(existingProduct, shopId)
+                                                }
+                                            } else {
+                                                val entity = ProductEntity(
+                                                    id = targetId,
+                                                    sku = doc.sku,
+                                                    name = doc.name,
+                                                    hindiName = doc.hindiName,
+                                                    category = doc.category,
+                                                    unit = doc.unit,
+                                                    purchasePrice = doc.purchasePrice,
+                                                    sellingPrice = doc.sellingPrice,
+                                                    currentStock = doc.currentStock,
+                                                    minStockLevel = doc.minStockLevel,
+                                                    supplierName = doc.supplierName,
+                                                    description = doc.description,
+                                                    colorHex = doc.colorHex,
+                                                    isArchived = doc.isArchived,
+                                                    createdAt = doc.createdAt,
+                                                    updatedAt = doc.updatedAt
+                                                )
+                                                database.productDao().insertProduct(entity)
+                                            }
                                         }
                                     }
                                 }
@@ -389,7 +399,7 @@ class FirebaseSyncRepository(
             )
             firestore.collection("shops").document(shopId).set(shopDoc, SetOptions.merge()).await()
 
-            // 2. Push & Pull Products (Mirrors deletion from Firebase)
+            // 2. Bidirectional Intelligent Sync for Products with Timestamp Conflict Resolution
             val remoteProductsSnap = firestore.collection("products")
                 .whereEqualTo("shopId", shopId)
                 .get()
@@ -399,16 +409,79 @@ class FirebaseSyncRepository(
             val activeRemoteProducts = remoteProducts.filter { !it.isArchived }
             val localProducts = database.productDao().getAllActiveProductsSync()
 
-            // Push any local products that don't exist remotely
-            val remoteDocIds = remoteProductsSnap.documents.map { it.id }.toSet()
-            val unsavedLocalProducts = localProducts.filter { p ->
-                val docId = "${shopId}_prod_${p.id}"
-                docId !in remoteDocIds
+            val localProductMap = localProducts.associateBy { it.id }
+            val remoteDocMap = activeRemoteProducts.associateBy { it.id.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L }
+
+            val productsToPushToCloud = mutableListOf<ProductEntity>()
+            val productsToUpdateLocally = mutableListOf<ProductEntity>()
+
+            // Evaluate local products against remote
+            for (local in localProducts) {
+                val remote = remoteDocMap[local.id]
+                if (remote == null) {
+                    // Not yet in cloud, push local
+                    productsToPushToCloud.add(local)
+                } else {
+                    if (local.updatedAt > remote.updatedAt) {
+                        // Local has newer changes (sales, inward, adjustments) - push to cloud
+                        productsToPushToCloud.add(local)
+                    } else if (remote.updatedAt > local.updatedAt) {
+                        // Cloud has newer changes - update local
+                        productsToUpdateLocally.add(
+                            ProductEntity(
+                                id = local.id,
+                                sku = remote.sku,
+                                name = remote.name,
+                                hindiName = remote.hindiName,
+                                category = remote.category,
+                                unit = remote.unit,
+                                purchasePrice = remote.purchasePrice,
+                                sellingPrice = remote.sellingPrice,
+                                currentStock = remote.currentStock,
+                                minStockLevel = remote.minStockLevel,
+                                supplierName = remote.supplierName,
+                                description = remote.description,
+                                colorHex = remote.colorHex,
+                                isArchived = false,
+                                createdAt = remote.createdAt,
+                                updatedAt = remote.updatedAt
+                            )
+                        )
+                    }
+                }
             }
 
-            if (unsavedLocalProducts.isNotEmpty()) {
+            // Evaluate remote products that don't exist locally
+            for (remote in activeRemoteProducts) {
+                val parsedId = remote.id.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                if (parsedId > 0 && !localProductMap.containsKey(parsedId)) {
+                    productsToUpdateLocally.add(
+                        ProductEntity(
+                            id = parsedId,
+                            sku = remote.sku,
+                            name = remote.name,
+                            hindiName = remote.hindiName,
+                            category = remote.category,
+                            unit = remote.unit,
+                            purchasePrice = remote.purchasePrice,
+                            sellingPrice = remote.sellingPrice,
+                            currentStock = remote.currentStock,
+                            minStockLevel = remote.minStockLevel,
+                            supplierName = remote.supplierName,
+                            description = remote.description,
+                            colorHex = remote.colorHex,
+                            isArchived = false,
+                            createdAt = remote.createdAt,
+                            updatedAt = remote.updatedAt
+                        )
+                    )
+                }
+            }
+
+            // Push newer / unsaved local products to cloud
+            if (productsToPushToCloud.isNotEmpty()) {
                 val batch = firestore.batch()
-                unsavedLocalProducts.forEach { p ->
+                productsToPushToCloud.forEach { p ->
                     val docId = "${shopId}_prod_${p.id}"
                     val ref = firestore.collection("products").document(docId)
                     val prodDoc = ProductDoc(
@@ -435,36 +508,9 @@ class FirebaseSyncRepository(
                 batch.commit().await()
             }
 
-            // Sync from Remote to Local: Insert/update active remote products
-            val remoteProductEntities = activeRemoteProducts.map { doc ->
-                val parsedId = doc.id.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
-                ProductEntity(
-                    id = parsedId,
-                    sku = doc.sku,
-                    name = doc.name,
-                    hindiName = doc.hindiName,
-                    category = doc.category,
-                    unit = doc.unit,
-                    purchasePrice = doc.purchasePrice,
-                    sellingPrice = doc.sellingPrice,
-                    currentStock = doc.currentStock,
-                    minStockLevel = doc.minStockLevel,
-                    supplierName = doc.supplierName,
-                    description = doc.description,
-                    colorHex = doc.colorHex,
-                    isArchived = false,
-                    createdAt = doc.createdAt,
-                    updatedAt = doc.updatedAt
-                )
-            }
-            if (remoteProductEntities.isNotEmpty()) {
-                database.productDao().insertAllProducts(remoteProductEntities)
-                val validProductIds = remoteProductEntities.map { it.id }.filter { it > 0 }
-                if (validProductIds.isNotEmpty()) {
-                    database.productDao().deleteProductsNotIn(validProductIds)
-                }
-            } else {
-                database.productDao().clearAllProducts()
+            // Update only genuinely newer remote products into local database
+            if (productsToUpdateLocally.isNotEmpty()) {
+                database.productDao().insertAllProducts(productsToUpdateLocally)
             }
 
             // 3. Push & Pull Customers
