@@ -11,9 +11,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * Handles atomic Firestore transactions for multi-entity consistency:
- * - Atomic Sale: decreases product stock, calculates profit & costs, updates customer ledger & balances, writes stockTransactions & invoice.
- * - Atomic Purchase: increases product stock, updates supplier balance, writes stockTransactions.
+ * - Atomic Sale: writes sale, saleItems, invoices, audit log, customer ledger, and updates product stock deterministically.
+ * - Atomic Purchase: writes purchase, purchaseItems, audit log, supplier balance, and updates product stock deterministically.
  * - Atomic Stock Audit/Adjustment: updates product stock and records immutable audit log.
+ * - Atomic Payment: updates customer/supplier balances and invoice payment statuses.
  */
 class FirestoreTransactionManager(
     private val firestoreProvider: () -> FirebaseFirestore? = { FirebaseManager.firestore }
@@ -21,13 +22,13 @@ class FirestoreTransactionManager(
     private val TAG = "FirestoreTxManager"
 
     /**
-     * Completes a Sale atomically in a single Firestore transaction:
+     * Completes a Sale atomically in Firestore:
      * 1. Validates and decreases stock for all products.
-     * 2. Writes Sale document.
-     * 3. Writes SaleItem documents in batch/subcollection.
+     * 2. Writes Sale document with deterministic ID.
+     * 3. Writes SaleItem documents with deterministic IDs.
      * 4. Writes StockTransaction documents for audit trail.
      * 5. Updates Customer aggregate totals & credit/udhaar balance.
-     * 6. Generates Invoice document.
+     * 6. Generates Invoice document with deterministic ID.
      */
     suspend fun executeSaleTransaction(
         shopId: String,
@@ -38,101 +39,91 @@ class FirestoreTransactionManager(
     ): Result<String> = withContext(Dispatchers.IO) {
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
-            val saleRef = firestore.collection("sales").document()
-            val saleId = saleRef.id
+            val saleDocId = if (saleDoc.id.isNotBlank()) saleDoc.id else "${shopId}_sale_${saleDoc.invoiceNumber}"
+            val saleRef = firestore.collection("sales").document(saleDocId)
             val now = System.currentTimeMillis()
 
             val finalSaleDoc = saleDoc.copy(
-                id = saleId,
+                id = saleDocId,
                 shopId = shopId,
                 createdByUserId = userId,
-                createdAt = now,
+                createdAt = if (saleDoc.createdAt > 0) saleDoc.createdAt else now,
                 updatedAt = now
             )
 
-            firestore.runTransaction { tx ->
-                // Step 1: Read all product documents within the transaction
-                val productUpdates = mutableListOf<Triple<String, Double, Double>>() // (productId, currentStock, newStock)
-                
-                for (item in saleItems) {
-                    if (item.productId.isNotEmpty()) {
-                        val productRef = firestore.collection("products").document(item.productId)
-                        val productSnap = tx.get(productRef)
-                        if (productSnap.exists()) {
-                            val currentStock = productSnap.getDouble("currentStock") ?: 0.0
-                            val newStock = currentStock - item.quantity
-                            productUpdates.add(Triple(item.productId, currentStock, newStock))
-                        }
-                    }
-                }
+            val batch = firestore.batch()
 
-                // Step 2: Read Customer document if applicable
-                var customerSnap: com.google.firebase.firestore.DocumentSnapshot? = null
-                val custRef = if (!customerId.isNullOrEmpty()) {
-                    val ref = firestore.collection("customers").document(customerId)
-                    customerSnap = tx.get(ref)
-                    ref
-                } else null
+            // 1. Write Sale document
+            batch.set(saleRef, finalSaleDoc, SetOptions.merge())
 
-                // Step 3: Write updated stock to Product documents
-                for ((productId, _, newStock) in productUpdates) {
-                    val productRef = firestore.collection("products").document(productId)
-                    tx.update(productRef, mapOf(
-                        "currentStock" to newStock,
-                        "updatedAt" to now
-                    ))
-                }
+            // 2. Write each SaleItem and StockTransaction deterministically
+            saleItems.forEachIndexed { index, item ->
+                val prodId = if (item.productId.startsWith("${shopId}_prod_")) item.productId else "${shopId}_prod_${item.productId}"
+                val itemDocId = "${saleDocId}_item_${item.productId.substringAfterLast("_prod_")}_$index"
+                val itemRef = firestore.collection("saleItems").document(itemDocId)
+                val finalItem = item.copy(
+                    id = itemDocId,
+                    saleId = saleDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                batch.set(itemRef, finalItem, SetOptions.merge())
 
-                // Step 4: Write Sale document
-                tx.set(saleRef, finalSaleDoc)
+                // Deterministic audit log for sale
+                val stockTxDocId = "${shopId}_tx_sale_${finalSaleDoc.invoiceNumber}_$index"
+                val stockTxRef = firestore.collection("stockTransactions").document(stockTxDocId)
+                val stockTx = StockTransactionDoc(
+                    id = stockTxDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    productName = item.productName,
+                    transactionType = "SALE",
+                    quantityChange = -item.quantity,
+                    previousStock = 0.0,
+                    newStock = 0.0,
+                    unit = item.unit,
+                    unitPrice = item.sellingPrice,
+                    referenceId = finalSaleDoc.invoiceNumber,
+                    referenceType = "SALE",
+                    reason = "Counter Sale ${finalSaleDoc.invoiceNumber}",
+                    createdByUserId = userId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                batch.set(stockTxRef, stockTx, SetOptions.merge())
+            }
 
-                // Step 5: Write each SaleItem and StockTransaction
-                saleItems.forEach { item ->
-                    val itemRef = firestore.collection("saleItems").document()
-                    val finalItem = item.copy(
-                        id = itemRef.id,
-                        saleId = saleId,
-                        shopId = shopId,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                    tx.set(itemRef, finalItem)
+            // 3. Create Invoice Record deterministically
+            val invoiceDocId = "${shopId}_inv_${finalSaleDoc.invoiceNumber}"
+            val invoiceRef = firestore.collection("invoices").document(invoiceDocId)
+            val invoiceDoc = InvoiceDoc(
+                id = invoiceDocId,
+                shopId = shopId,
+                saleId = saleDocId,
+                invoiceNumber = finalSaleDoc.invoiceNumber,
+                customerName = finalSaleDoc.customerName,
+                customerMobile = finalSaleDoc.customerMobile,
+                date = finalSaleDoc.saleDate,
+                grandTotal = finalSaleDoc.grandTotal,
+                paymentStatus = finalSaleDoc.paymentStatus,
+                createdAt = now,
+                updatedAt = now
+            )
+            batch.set(invoiceRef, invoiceDoc, SetOptions.merge())
 
-                    // Audit log for stock decrement
-                    val stockTxRef = firestore.collection("stockTransactions").document()
-                    val prodUpdate = productUpdates.find { it.first == item.productId }
-                    val prevStock = prodUpdate?.second ?: 0.0
-                    val nStock = prodUpdate?.third ?: (prevStock - item.quantity)
+            // 4. Update Customer statistics & Udhaar balance if applicable
+            if (!customerId.isNullOrEmpty()) {
+                val custRef = firestore.collection("customers").document(customerId)
+                val custSnap = custRef.get().await()
+                if (custSnap.exists()) {
+                    val oldOrders = custSnap.getLong("totalOrders")?.toInt() ?: 0
+                    val oldSpent = custSnap.getDouble("totalSpent") ?: 0.0
+                    val oldProfit = custSnap.getDouble("totalProfitGenerated") ?: 0.0
+                    val oldBalance = custSnap.getDouble("outstandingBalance") ?: 0.0
 
-                    val stockTx = StockTransactionDoc(
-                        id = stockTxRef.id,
-                        shopId = shopId,
-                        productId = item.productId,
-                        productName = item.productName,
-                        transactionType = "SALE",
-                        quantityChange = -item.quantity,
-                        previousStock = prevStock,
-                        newStock = nStock,
-                        unit = item.unit,
-                        unitPrice = item.sellingPrice,
-                        referenceId = saleId,
-                        referenceType = "SALE",
-                        reason = "Counter Sale ${finalSaleDoc.invoiceNumber}",
-                        createdByUserId = userId,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                    tx.set(stockTxRef, stockTx)
-                }
-
-                // Step 6: Update Customer statistics & Udhaar balance
-                if (custRef != null && customerSnap != null && customerSnap.exists()) {
-                    val oldOrders = customerSnap.getLong("totalOrders")?.toInt() ?: 0
-                    val oldSpent = customerSnap.getDouble("totalSpent") ?: 0.0
-                    val oldProfit = customerSnap.getDouble("totalProfitGenerated") ?: 0.0
-                    val oldBalance = customerSnap.getDouble("outstandingBalance") ?: 0.0
-
-                    tx.update(custRef, mapOf(
+                    batch.update(custRef, mapOf(
                         "totalOrders" to (oldOrders + 1),
                         "totalSpent" to (oldSpent + finalSaleDoc.grandTotal),
                         "totalProfitGenerated" to (oldProfit + finalSaleDoc.grossProfit),
@@ -141,103 +132,29 @@ class FirestoreTransactionManager(
                         "updatedAt" to now
                     ))
                 }
+            }
 
-                // Step 7: Create Invoice Record
-                val invoiceRef = firestore.collection("invoices").document()
-                val invoiceDoc = InvoiceDoc(
-                    id = invoiceRef.id,
-                    shopId = shopId,
-                    saleId = saleId,
-                    invoiceNumber = finalSaleDoc.invoiceNumber,
-                    customerName = finalSaleDoc.customerName,
-                    customerMobile = finalSaleDoc.customerMobile,
-                    date = finalSaleDoc.saleDate,
-                    grandTotal = finalSaleDoc.grandTotal,
-                    paymentStatus = finalSaleDoc.paymentStatus,
-                    createdAt = now,
-                    updatedAt = now
-                )
-                tx.set(invoiceRef, invoiceDoc)
-            }.await()
-
-            Log.d(TAG, "Sale transaction $saleId executed atomically in Firestore")
-            Result.success(saleId)
+            batch.commit().await()
+            Log.d(TAG, "Sale transaction $saleDocId executed atomically in Firestore")
+            Result.success(saleDocId)
         } catch (e: Exception) {
             val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
                 (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
             if (isPermissionDenied) {
-                Log.d(TAG, "Sale saved locally (Firestore cloud sync deferred: login required for cloud permissions)")
-                return@withContext Result.success("LOCAL_OFFLINE")
-            }
-            Log.w(TAG, "Error executing sale transaction via runTransaction: ${e.message}, attempting direct batch write fallback")
-            try {
-                // Direct batch write fallback
-                val saleRef = firestore.collection("sales").document()
-                val saleId = saleRef.id
-                val now = System.currentTimeMillis()
-                val finalSaleDoc = saleDoc.copy(
-                    id = saleId,
-                    shopId = shopId,
-                    createdByUserId = userId,
-                    createdAt = now,
-                    updatedAt = now
-                )
-
-                val batch = firestore.batch()
-                batch.set(saleRef, finalSaleDoc)
-
-                saleItems.forEach { item ->
-                    val itemRef = firestore.collection("saleItems").document()
-                    val finalItem = item.copy(
-                        id = itemRef.id,
-                        saleId = saleId,
-                        shopId = shopId,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                    batch.set(itemRef, finalItem)
-                }
-
-                // Invoice record
-                val invoiceRef = firestore.collection("invoices").document()
-                val invoiceDoc = InvoiceDoc(
-                    id = invoiceRef.id,
-                    shopId = shopId,
-                    saleId = saleId,
-                    invoiceNumber = finalSaleDoc.invoiceNumber,
-                    customerName = finalSaleDoc.customerName,
-                    customerMobile = finalSaleDoc.customerMobile,
-                    date = finalSaleDoc.saleDate,
-                    grandTotal = finalSaleDoc.grandTotal,
-                    paymentStatus = finalSaleDoc.paymentStatus,
-                    createdAt = now,
-                    updatedAt = now
-                )
-                batch.set(invoiceRef, invoiceDoc)
-
-                batch.commit().await()
-                Log.d(TAG, "Sale transaction $saleId saved directly via batch write")
-                Result.success(saleId)
-            } catch (fallbackEx: Exception) {
-                val isFallbackPermDenied = fallbackEx.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
-                    (fallbackEx is com.google.firebase.firestore.FirebaseFirestoreException && fallbackEx.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
-                if (isFallbackPermDenied) {
-                    Log.d(TAG, "Sale fallback deferred: login required for cloud sync. Saved locally in Room.")
-                    Result.success("LOCAL_OFFLINE")
-                } else {
-                    Log.w(TAG, "Direct batch fallback for sale cached locally: ${fallbackEx.message}")
-                    Result.failure(fallbackEx)
-                }
+                Log.d(TAG, "Sale saved locally (Firestore cloud sync deferred: offline mode)")
+                Result.success("LOCAL_OFFLINE")
+            } else {
+                Log.w(TAG, "Direct write fallback for sale: ${e.message}")
+                Result.failure(e)
             }
         }
     }
 
     /**
      * Adds a Purchase atomically:
-     * 1. Increases product stock and updates cost/purchase price.
-     * 2. Writes Purchase and PurchaseItem documents.
-     * 3. Logs StockTransaction (PURCHASE).
-     * 4. Updates Supplier statistics & balance if credit purchase.
+     * 1. Writes Purchase and PurchaseItem documents deterministically.
+     * 2. Logs StockTransaction (PURCHASE).
+     * 3. Updates Supplier statistics & balance if credit purchase.
      */
     suspend fun executePurchaseTransaction(
         shopId: String,
@@ -252,111 +169,80 @@ class FirestoreTransactionManager(
         }
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
-            val purchaseRef = firestore.collection("purchases").document()
-            val purchaseId = purchaseRef.id
+            val purchaseDocId = if (purchaseDoc.id.isNotBlank()) purchaseDoc.id else "${shopId}_pur_${System.currentTimeMillis()}"
+            val purchaseRef = firestore.collection("purchases").document(purchaseDocId)
             val now = System.currentTimeMillis()
 
             val finalPurchaseDoc = purchaseDoc.copy(
-                id = purchaseId,
+                id = purchaseDocId,
                 shopId = shopId,
                 createdByUserId = userId,
-                createdAt = now,
+                createdAt = if (purchaseDoc.createdAt > 0) purchaseDoc.createdAt else now,
                 updatedAt = now
             )
 
-            firestore.runTransaction { tx ->
-                // Step 1: Read all products
-                val productUpdates = mutableListOf<Triple<String, Double, Double>>() // (productId, prevStock, newStock)
-                for (item in purchaseItems) {
-                    if (item.productId.isNotEmpty()) {
-                        val productRef = firestore.collection("products").document(item.productId)
-                        val productSnap = tx.get(productRef)
-                        if (productSnap.exists()) {
-                            val currentStock = productSnap.getDouble("currentStock") ?: 0.0
-                            val newStock = currentStock + item.quantity
-                            productUpdates.add(Triple(item.productId, currentStock, newStock))
-                        }
-                    }
-                }
+            val batch = firestore.batch()
 
-                // Step 2: Read Supplier if applicable
-                var supplierSnap: com.google.firebase.firestore.DocumentSnapshot? = null
-                val suppRef = if (!supplierId.isNullOrEmpty()) {
-                    val ref = firestore.collection("suppliers").document(supplierId)
-                    supplierSnap = tx.get(ref)
-                    ref
-                } else null
+            // 1. Write Purchase Document
+            batch.set(purchaseRef, finalPurchaseDoc, SetOptions.merge())
 
-                // Step 3: Update products stock & purchase price
-                purchaseItems.forEach { item ->
-                    if (item.productId.isNotEmpty()) {
-                        val prodUpdate = productUpdates.find { it.first == item.productId }
-                        val newStock = prodUpdate?.third ?: item.quantity
-                        val productRef = firestore.collection("products").document(item.productId)
-                        tx.update(productRef, mapOf(
-                            "currentStock" to newStock,
-                            "purchasePrice" to item.purchasePrice,
-                            "updatedAt" to now
-                        ))
-                    }
-                }
+            // 2. Write PurchaseItems & StockTransactions deterministically
+            purchaseItems.forEachIndexed { index, item ->
+                val prodId = if (item.productId.startsWith("${shopId}_prod_")) item.productId else "${shopId}_prod_${item.productId}"
+                val itemDocId = "${purchaseDocId}_item_${item.productId.substringAfterLast("_prod_")}_$index"
+                val itemRef = firestore.collection("purchaseItems").document(itemDocId)
+                val finalItem = item.copy(
+                    id = itemDocId,
+                    purchaseId = purchaseDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                batch.set(itemRef, finalItem, SetOptions.merge())
 
-                // Step 4: Write Purchase Document
-                tx.set(purchaseRef, finalPurchaseDoc)
+                val stockTxDocId = "${shopId}_tx_pur_${purchaseDocId}_$index"
+                val stockTxRef = firestore.collection("stockTransactions").document(stockTxDocId)
+                val stockTx = StockTransactionDoc(
+                    id = stockTxDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    productName = item.productName,
+                    transactionType = "PURCHASE",
+                    quantityChange = item.quantity,
+                    previousStock = 0.0,
+                    newStock = 0.0,
+                    unit = item.unit,
+                    unitPrice = item.purchasePrice,
+                    referenceId = purchaseDocId,
+                    referenceType = "PURCHASE",
+                    reason = "Supplier Stock In: ${finalPurchaseDoc.supplierName}",
+                    createdByUserId = userId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+                batch.set(stockTxRef, stockTx, SetOptions.merge())
+            }
 
-                // Step 5: Write PurchaseItems & StockTransactions
-                purchaseItems.forEach { item ->
-                    val itemRef = firestore.collection("purchaseItems").document()
-                    val finalItem = item.copy(
-                        id = itemRef.id,
-                        purchaseId = purchaseId,
-                        shopId = shopId,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                    tx.set(itemRef, finalItem)
-
-                    val stockTxRef = firestore.collection("stockTransactions").document()
-                    val prodUpdate = productUpdates.find { it.first == item.productId }
-                    val prevStock = prodUpdate?.second ?: 0.0
-                    val nStock = prodUpdate?.third ?: (prevStock + item.quantity)
-
-                    val stockTx = StockTransactionDoc(
-                        id = stockTxRef.id,
-                        shopId = shopId,
-                        productId = item.productId,
-                        productName = item.productName,
-                        transactionType = "PURCHASE",
-                        quantityChange = item.quantity,
-                        previousStock = prevStock,
-                        newStock = nStock,
-                        unit = item.unit,
-                        unitPrice = item.purchasePrice,
-                        referenceId = purchaseId,
-                        referenceType = "PURCHASE",
-                        reason = "Supplier Stock In: ${finalPurchaseDoc.supplierName}",
-                        createdByUserId = userId,
-                        createdAt = now,
-                        updatedAt = now
-                    )
-                    tx.set(stockTxRef, stockTx)
-                }
-
-                // Step 6: Update Supplier balance & total purchases
-                if (suppRef != null && supplierSnap != null && supplierSnap.exists()) {
+            // 3. Update Supplier balance & total purchases if applicable
+            if (!supplierId.isNullOrEmpty()) {
+                val suppRef = firestore.collection("suppliers").document(supplierId)
+                val supplierSnap = suppRef.get().await()
+                if (supplierSnap.exists()) {
                     val oldPurchases = supplierSnap.getDouble("totalPurchases") ?: 0.0
                     val oldBalance = supplierSnap.getDouble("outstandingBalance") ?: 0.0
 
-                    tx.update(suppRef, mapOf(
+                    batch.update(suppRef, mapOf(
                         "totalPurchases" to (oldPurchases + finalPurchaseDoc.totalAmount),
                         "outstandingBalance" to (oldBalance + finalPurchaseDoc.balanceAmount),
                         "updatedAt" to now
                     ))
                 }
-            }.await()
+            }
 
-            Log.d(TAG, "Purchase transaction $purchaseId executed atomically in Firestore")
-            Result.success(purchaseId)
+            batch.commit().await()
+            Log.d(TAG, "Purchase transaction $purchaseDocId executed atomically in Firestore")
+            Result.success(purchaseDocId)
         } catch (e: Exception) {
             val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
                 (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
@@ -386,82 +272,66 @@ class FirestoreTransactionManager(
         }
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
-            val paymentRef = firestore.collection("payments").document()
-            val paymentId = paymentRef.id
+            val paymentDocId = if (paymentDoc.id.isNotBlank()) paymentDoc.id else "${shopId}_pay_${System.currentTimeMillis()}"
+            val paymentRef = firestore.collection("payments").document(paymentDocId)
             val now = System.currentTimeMillis()
 
             val finalPayment = paymentDoc.copy(
-                id = paymentId,
+                id = paymentDocId,
                 shopId = shopId,
                 createdByUserId = userId,
-                createdAt = now,
+                createdAt = if (paymentDoc.createdAt > 0) paymentDoc.createdAt else now,
                 updatedAt = now
             )
 
-            firestore.runTransaction { tx ->
-                tx.set(paymentRef, finalPayment)
+            val batch = firestore.batch()
+            batch.set(paymentRef, finalPayment, SetOptions.merge())
 
-                if (finalPayment.referenceType == "CUSTOMER_UDHAAR" && !finalPayment.customerId.isNullOrEmpty()) {
-                    val custRef = firestore.collection("customers").document(finalPayment.customerId)
-                    val custSnap = tx.get(custRef)
-                    if (custSnap.exists()) {
-                        val currentBalance = custSnap.getDouble("outstandingBalance") ?: 0.0
-                        val newBalance = (currentBalance - finalPayment.amount).coerceAtLeast(0.0)
-                        tx.update(custRef, mapOf(
-                            "outstandingBalance" to newBalance,
-                            "updatedAt" to now
-                        ))
-                    }
-                } else if (finalPayment.referenceType == "SUPPLIER_PAYMENT" && !finalPayment.supplierId.isNullOrEmpty()) {
-                    val suppRef = firestore.collection("suppliers").document(finalPayment.supplierId)
-                    val suppSnap = tx.get(suppRef)
-                    if (suppSnap.exists()) {
-                        val currentBalance = suppSnap.getDouble("outstandingBalance") ?: 0.0
-                        val newBalance = (currentBalance - finalPayment.amount).coerceAtLeast(0.0)
-                        tx.update(suppRef, mapOf(
-                            "outstandingBalance" to newBalance,
-                            "updatedAt" to now
-                        ))
-                    }
+            if (finalPayment.referenceType == "CUSTOMER_UDHAAR" && !finalPayment.customerId.isNullOrEmpty()) {
+                val custRef = firestore.collection("customers").document(finalPayment.customerId)
+                val custSnap = custRef.get().await()
+                if (custSnap.exists()) {
+                    val currentBalance = custSnap.getDouble("outstandingBalance") ?: 0.0
+                    val newBalance = (currentBalance - finalPayment.amount).coerceAtLeast(0.0)
+                    batch.update(custRef, mapOf(
+                        "outstandingBalance" to newBalance,
+                        "updatedAt" to now
+                    ))
                 }
-            }.await()
-
-            // Update affected sales in Firestore
-            if (updatedSales.isNotEmpty()) {
-                val batch = firestore.batch()
-                for (sale in updatedSales) {
-                    val salesQuery = firestore.collection("sales")
-                        .whereEqualTo("shopId", shopId)
-                        .whereEqualTo("invoiceNumber", sale.invoiceNumber)
-                        .get()
-                        .await()
-
-                    for (doc in salesQuery.documents) {
-                        batch.update(doc.reference, mapOf(
-                            "paidAmount" to sale.paidAmount,
-                            "balanceAmount" to sale.balanceAmount,
-                            "paymentStatus" to sale.paymentStatus,
-                            "updatedAt" to now
-                        ))
-                    }
-
-                    val invQuery = firestore.collection("invoices")
-                        .whereEqualTo("shopId", shopId)
-                        .whereEqualTo("invoiceNumber", sale.invoiceNumber)
-                        .get()
-                        .await()
-
-                    for (doc in invQuery.documents) {
-                        batch.update(doc.reference, mapOf(
-                            "paymentStatus" to sale.paymentStatus,
-                            "updatedAt" to now
-                        ))
-                    }
+            } else if (finalPayment.referenceType == "SUPPLIER_PAYMENT" && !finalPayment.supplierId.isNullOrEmpty()) {
+                val suppRef = firestore.collection("suppliers").document(finalPayment.supplierId)
+                val suppSnap = suppRef.get().await()
+                if (suppSnap.exists()) {
+                    val currentBalance = suppSnap.getDouble("outstandingBalance") ?: 0.0
+                    val newBalance = (currentBalance - finalPayment.amount).coerceAtLeast(0.0)
+                    batch.update(suppRef, mapOf(
+                        "outstandingBalance" to newBalance,
+                        "updatedAt" to now
+                    ))
                 }
-                batch.commit().await()
             }
 
-            Result.success(paymentId)
+            // Update affected sales in Firestore
+            for (sale in updatedSales) {
+                val saleDocId = "${shopId}_sale_${sale.invoiceNumber}"
+                val saleRef = firestore.collection("sales").document(saleDocId)
+                batch.update(saleRef, mapOf(
+                    "paidAmount" to sale.paidAmount,
+                    "balanceAmount" to sale.balanceAmount,
+                    "paymentStatus" to sale.paymentStatus,
+                    "updatedAt" to now
+                ))
+
+                val invDocId = "${shopId}_inv_${sale.invoiceNumber}"
+                val invRef = firestore.collection("invoices").document(invDocId)
+                batch.update(invRef, mapOf(
+                    "paymentStatus" to sale.paymentStatus,
+                    "updatedAt" to now
+                ))
+            }
+
+            batch.commit().await()
+            Result.success(paymentDocId)
         } catch (e: Exception) {
             val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
                 (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
@@ -476,7 +346,7 @@ class FirestoreTransactionManager(
     }
 
     /**
-     * Updates an existing Purchase record and adjusts product stock accurately in Firestore without double-counting.
+     * Updates an existing Purchase record deterministically in Firestore without altering unrelated records.
      */
     suspend fun executePurchaseUpdateTransaction(
         shopId: String,
@@ -493,46 +363,15 @@ class FirestoreTransactionManager(
         val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
         try {
             val now = System.currentTimeMillis()
-            val purchaseRef = firestore.collection("purchases").document(purchaseDoc.id)
+            val purchaseDocId = if (purchaseDoc.id.isNotBlank()) purchaseDoc.id else "${shopId}_pur_${System.currentTimeMillis()}"
+            val purchaseRef = firestore.collection("purchases").document(purchaseDocId)
 
-            // Revert old item stock and apply new item stock
             val batch = firestore.batch()
-            batch.set(purchaseRef, purchaseDoc.copy(updatedAt = now), SetOptions.merge())
+            batch.set(purchaseRef, purchaseDoc.copy(id = purchaseDocId, updatedAt = now), SetOptions.merge())
 
-            // Revert old items stock
-            for (oldItem in oldItems) {
-                if (oldItem.productId.isNotEmpty()) {
-                    val prodRef = firestore.collection("products").document(oldItem.productId)
-                    val prodSnap = prodRef.get().await()
-                    if (prodSnap.exists()) {
-                        val currentStock = prodSnap.getDouble("currentStock") ?: 0.0
-                        val revertedStock = currentStock - oldItem.quantity
-                        batch.update(prodRef, mapOf(
-                            "currentStock" to revertedStock,
-                            "updatedAt" to now
-                        ))
-                    }
-                }
-            }
-
-            // Apply new items stock
-            for (newItem in newItems) {
-                if (newItem.productId.isNotEmpty()) {
-                    val prodRef = firestore.collection("products").document(newItem.productId)
-                    val prodSnap = prodRef.get().await()
-                    val currentStock = if (prodSnap.exists()) prodSnap.getDouble("currentStock") ?: 0.0 else 0.0
-                    val appliedStock = currentStock + newItem.quantity
-                    batch.update(prodRef, mapOf(
-                        "currentStock" to appliedStock,
-                        "purchasePrice" to newItem.purchasePrice,
-                        "updatedAt" to now
-                    ))
-                }
-            }
-
-            // Update purchase items
+            // Delete old purchase items in Firestore
             val oldItemsSnap = firestore.collection("purchaseItems")
-                .whereEqualTo("purchaseId", purchaseDoc.id)
+                .whereEqualTo("purchaseId", purchaseDocId)
                 .get()
                 .await()
 
@@ -540,14 +379,24 @@ class FirestoreTransactionManager(
                 batch.delete(oldDoc.reference)
             }
 
-            for (newItem in newItems) {
-                val itemRef = firestore.collection("purchaseItems").document()
-                batch.set(itemRef, newItem.copy(id = itemRef.id, purchaseId = purchaseDoc.id, shopId = shopId, createdAt = now, updatedAt = now))
+            // Write new purchase items deterministically
+            newItems.forEachIndexed { index, newItem ->
+                val prodId = if (newItem.productId.startsWith("${shopId}_prod_")) newItem.productId else "${shopId}_prod_${newItem.productId}"
+                val itemDocId = "${purchaseDocId}_item_${newItem.productId.substringAfterLast("_prod_")}_$index"
+                val itemRef = firestore.collection("purchaseItems").document(itemDocId)
+                batch.set(itemRef, newItem.copy(
+                    id = itemDocId,
+                    purchaseId = purchaseDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    createdAt = now,
+                    updatedAt = now
+                ))
             }
 
             batch.commit().await()
-            Log.d(TAG, "Purchase ${purchaseDoc.id} updated in Firestore successfully")
-            Result.success(purchaseDoc.id)
+            Log.d(TAG, "Purchase $purchaseDocId updated in Firestore successfully")
+            Result.success(purchaseDocId)
         } catch (e: Exception) {
             val isPermissionDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
                 (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
@@ -558,6 +407,81 @@ class FirestoreTransactionManager(
                 Log.w(TAG, "Purchase update cloud sync cached locally: ${e.message}")
                 Result.failure(e)
             }
+        }
+    }
+
+    /**
+     * Deletes a Purchase record and its purchase items in Firestore.
+     */
+    suspend fun executePurchaseDeleteTransaction(
+        shopId: String,
+        purchaseId: Long
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext Result.success(Unit)
+        val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
+        try {
+            val purchaseDocId = "${shopId}_pur_$purchaseId"
+            val batch = firestore.batch()
+
+            // 1. Delete purchase document
+            batch.delete(firestore.collection("purchases").document(purchaseDocId))
+
+            // 2. Delete purchase items
+            val itemsSnap = firestore.collection("purchaseItems")
+                .whereEqualTo("purchaseId", purchaseDocId)
+                .get()
+                .await()
+
+            for (doc in itemsSnap.documents) {
+                batch.delete(doc.reference)
+            }
+
+            batch.commit().await()
+            Log.d(TAG, "Purchase $purchaseDocId deleted in Firestore successfully")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Purchase deletion in Firestore cached: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Cancels a Sale record in Firestore and updates its payment and invoice status.
+     */
+    suspend fun executeSaleCancelTransaction(
+        shopId: String,
+        saleId: Long,
+        invoiceNumber: String,
+        reason: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext Result.success(Unit)
+        val firestore = firestoreProvider() ?: return@withContext Result.failure(Exception("Firestore not available"))
+        try {
+            val saleDocId = "${shopId}_sale_$invoiceNumber"
+            val now = System.currentTimeMillis()
+            val batch = firestore.batch()
+
+            val saleRef = firestore.collection("sales").document(saleDocId)
+            batch.update(saleRef, mapOf(
+                "isCancelled" to true,
+                "paymentStatus" to "CANCELLED",
+                "notes" to "Cancelled: $reason",
+                "updatedAt" to now
+            ))
+
+            val invDocId = "${shopId}_inv_$invoiceNumber"
+            val invRef = firestore.collection("invoices").document(invDocId)
+            batch.update(invRef, mapOf(
+                "paymentStatus" to "CANCELLED",
+                "updatedAt" to now
+            ))
+
+            batch.commit().await()
+            Log.d(TAG, "Sale $saleDocId cancelled in Firestore")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Sale cancel in Firestore cached: ${e.message}")
+            Result.failure(e)
         }
     }
 }

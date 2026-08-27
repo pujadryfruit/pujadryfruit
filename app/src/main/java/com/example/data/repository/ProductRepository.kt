@@ -69,5 +69,8 @@ class ProductRepository(
         )
     }
 
-    suspend fun deleteProduct(id: Long) = productDao.archiveProduct(id)
+    suspend fun deleteProduct(id: Long) {
+        productDao.archiveProduct(id)
+        productDao.deleteProductById(id)
+    }
 }

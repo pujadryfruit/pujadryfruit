@@ -58,6 +58,36 @@ fun PurchaseScreen(
                 p.invoiceReference.contains(searchQuery, ignoreCase = true)
     }
 
+    var purchaseToDelete by remember { mutableStateOf<PurchaseEntity?>(null) }
+
+    if (purchaseToDelete != null) {
+        val targetPurchase = purchaseToDelete!!
+        AlertDialog(
+            onDismissRequest = { purchaseToDelete = null },
+            title = { Text("Delete Inward Stock?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Are you sure you want to delete purchase record #${targetPurchase.id} from ${targetPurchase.supplierName}? This will automatically revert and decrease the associated product stock.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deletePurchase(targetPurchase.id) {
+                            purchaseToDelete = null
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete & Revert Stock")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { purchaseToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -133,7 +163,8 @@ fun PurchaseScreen(
                 items(filteredPurchases) { purchase ->
                     PurchaseCard(
                         purchase = purchase,
-                        onEditClick = { purchaseToEdit = purchase }
+                        onEditClick = { purchaseToEdit = purchase },
+                        onDeleteClick = { purchaseToDelete = purchase }
                     )
                 }
             }
@@ -204,7 +235,8 @@ fun PurchaseScreen(
 @Composable
 fun PurchaseCard(
     purchase: PurchaseEntity,
-    onEditClick: () -> Unit = {}
+    onEditClick: () -> Unit = {},
+    onDeleteClick: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier
@@ -220,7 +252,7 @@ fun PurchaseCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = purchase.supplierName,
                         style = MaterialTheme.typography.titleSmall,
@@ -235,9 +267,12 @@ fun PurchaseCard(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     StatusBadge(status = purchase.paymentStatus)
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     IconButton(onClick = onEditClick, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit Stock In", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                    }
+                    IconButton(onClick = onDeleteClick, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete Stock In", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                     }
                 }
             }

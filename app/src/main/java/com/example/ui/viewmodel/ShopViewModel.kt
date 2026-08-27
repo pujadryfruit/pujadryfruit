@@ -498,11 +498,15 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelSale(saleId: Long, reason: String) {
         viewModelScope.launch {
+            val sale = salesRepo.getSaleById(saleId)
             val saleItems = salesRepo.getSaleItemsSync(saleId)
             salesRepo.cancelSale(saleId, reason)
             loadActiveInvoice(saleId)
             _uiEventMessage.emit("Sale cancelled and inventory restored!")
             launch {
+                if (sale != null) {
+                    syncRepo.syncSaleCancelToCloud(saleId, sale.invoiceNumber, reason)
+                }
                 for (item in saleItems) {
                     val updatedProd = productRepo.getProductById(item.productId)
                     if (updatedProd != null) {
@@ -570,16 +574,17 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteProduct(productId: Long) {
+    fun deleteProduct(productId: Long, onComplete: (() -> Unit)? = null) {
         viewModelScope.launch {
             val product = productRepo.getProductById(productId)
             productRepo.deleteProduct(productId)
-            _uiEventMessage.emit("Product archived from active catalog")
+            _uiEventMessage.emit("Product deleted from inventory and cloud")
             if (product != null) {
                 launch {
                     syncRepo.deleteProductFromCloud(product)
                 }
             }
+            onComplete?.invoke()
         }
     }
 
@@ -744,6 +749,24 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun getPurchaseItemsForEdit(purchaseId: Long): List<PurchaseItemEntity> {
         return purchaseRepo.getPurchaseItemsSync(purchaseId)
+    }
+
+    fun deletePurchase(purchaseId: Long, onComplete: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            val items = purchaseRepo.getPurchaseItemsSync(purchaseId)
+            purchaseRepo.deletePurchase(purchaseId)
+            _uiEventMessage.emit("Purchase #$purchaseId deleted and stock restored")
+            launch {
+                syncRepo.syncPurchaseDeleteToCloud(purchaseId)
+                for (item in items) {
+                    val updatedProd = productRepo.getProductById(item.productId)
+                    if (updatedProd != null) {
+                        syncRepo.syncProductToCloud(updatedProd)
+                    }
+                }
+            }
+            onComplete?.invoke()
+        }
     }
 
     // --- Customer & Udhaar Operations ---

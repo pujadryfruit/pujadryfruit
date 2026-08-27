@@ -717,8 +717,56 @@ class FirebaseSyncRepository(
                 // Push any unsynced local sales to Firestore immediately
                 val unsyncedLocalSales = localSales.filter { it.invoiceNumber !in remoteInvoiceNumbers }
                 for (unsynced in unsyncedLocalSales) {
-                    val localItems = database.saleDao().getSaleItemsSync(unsynced.id)
-                    syncSaleToCloud(unsynced, localItems, shopId)
+                    val saleItems = database.saleDao().getSaleItemsSync(unsynced.id)
+                    val saleDocId = "${shopId}_sale_${unsynced.invoiceNumber}"
+                    val saleDoc = SaleDoc(
+                        id = saleDocId,
+                        shopId = shopId,
+                        invoiceNumber = unsynced.invoiceNumber,
+                        customerId = unsynced.customerId?.let { "${shopId}_cust_$it" },
+                        customerName = unsynced.customerName,
+                        customerMobile = unsynced.customerMobile,
+                        saleDate = unsynced.saleDate,
+                        subtotal = unsynced.subtotal,
+                        discount = unsynced.discount,
+                        taxAmount = unsynced.taxAmount,
+                        grandTotal = unsynced.grandTotal,
+                        totalCost = unsynced.totalCost,
+                        grossProfit = unsynced.grossProfit,
+                        profitMarginPercent = unsynced.profitMarginPercent,
+                        paymentMethod = unsynced.paymentMethod,
+                        paymentStatus = unsynced.paymentStatus,
+                        paidAmount = unsynced.paidAmount,
+                        balanceAmount = unsynced.balanceAmount,
+                        dueDate = unsynced.dueDate,
+                        notes = unsynced.notes,
+                        isCancelled = unsynced.isCancelled,
+                        cancelledAt = unsynced.cancelledAt,
+                        cancellationReason = unsynced.cancellationReason,
+                        createdByUserId = FirebaseManager.currentUserId,
+                        createdAt = unsynced.createdAt,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    firestore.collection("sales").document(saleDocId).set(saleDoc, SetOptions.merge()).await()
+
+                    saleItems.forEachIndexed { idx, item ->
+                        val itemDocId = "${saleDocId}_item_${item.productId}_$idx"
+                        val itemDoc = SaleItemDoc(
+                            id = itemDocId,
+                            saleId = saleDocId,
+                            shopId = shopId,
+                            productId = "${shopId}_prod_${item.productId}",
+                            productName = item.productName,
+                            unit = item.unit,
+                            quantity = item.quantity,
+                            sellingPrice = item.sellingPrice,
+                            costPrice = item.costPrice,
+                            discount = item.discount,
+                            totalAmount = item.totalAmount,
+                            itemProfit = item.itemProfit
+                        )
+                        firestore.collection("saleItems").document(itemDocId).set(itemDoc, SetOptions.merge()).await()
+                    }
                 }
 
                 // Pull any remote sales not present locally
@@ -747,7 +795,9 @@ class FirebaseSyncRepository(
                                 balanceAmount = saleDoc.balanceAmount,
                                 dueDate = saleDoc.dueDate,
                                 notes = saleDoc.notes,
-                                isCancelled = false,
+                                isCancelled = saleDoc.isCancelled,
+                                cancelledAt = saleDoc.cancelledAt,
+                                cancellationReason = saleDoc.cancellationReason,
                                 createdAt = saleDoc.createdAt
                             )
                             val insertedSaleId = database.saleDao().insertSale(saleEntity)
@@ -795,8 +845,42 @@ class FirebaseSyncRepository(
                 val unsavedLocalPurchases = localPurchases.filter { "${shopId}_pur_${it.id}" !in remotePurchaseIds }
 
                 for (pur in unsavedLocalPurchases) {
+                    val purDocId = "${shopId}_pur_${pur.id}"
+                    val purDoc = PurchaseDoc(
+                        id = purDocId,
+                        shopId = shopId,
+                        purchaseDate = pur.purchaseDate,
+                        supplierId = "${shopId}_supp_${pur.supplierName.hashCode()}",
+                        supplierName = pur.supplierName,
+                        supplierPhone = pur.supplierPhone,
+                        invoiceReference = pur.invoiceReference,
+                        totalAmount = pur.totalAmount,
+                        paymentStatus = pur.paymentStatus,
+                        paymentMethod = pur.paymentMethod,
+                        paidAmount = pur.totalAmount,
+                        notes = pur.notes,
+                        createdByUserId = FirebaseManager.currentUserId,
+                        createdAt = pur.createdAt,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    firestore.collection("purchases").document(purDocId).set(purDoc, SetOptions.merge()).await()
+
                     val purItems = database.purchaseDao().getPurchaseItemsSync(pur.id)
-                    syncPurchaseToCloud(pur, purItems, shopId)
+                    purItems.forEachIndexed { idx, item ->
+                        val itemDocId = "${purDocId}_item_${item.productId}_$idx"
+                        val itemDoc = PurchaseItemDoc(
+                            id = itemDocId,
+                            purchaseId = purDocId,
+                            shopId = shopId,
+                            productId = "${shopId}_prod_${item.productId}",
+                            productName = item.productName,
+                            unit = item.unit,
+                            quantity = item.quantity,
+                            purchasePrice = item.purchasePrice,
+                            totalAmount = item.totalAmount
+                        )
+                        firestore.collection("purchaseItems").document(itemDocId).set(itemDoc, SetOptions.merge()).await()
+                    }
                 }
 
                 for (docSnap in remotePurchasesSnap.documents) {
@@ -964,7 +1048,7 @@ class FirebaseSyncRepository(
     }
 
     /**
-     * Archives / deletes a Product in Firestore directly
+     * Permanently deletes a Product in Firestore directly
      */
     suspend fun deleteProductFromCloud(
         product: ProductEntity,
@@ -973,12 +1057,44 @@ class FirebaseSyncRepository(
         if (FirebaseManager.auth?.currentUser == null) return@withContext
         val firestore = firestoreProvider() ?: return@withContext
         try {
+            val batch = firestore.batch()
             val docId = "${shopId}_prod_${product.id}"
-            val ref = firestore.collection("products").document(docId)
-            ref.update(mapOf("isArchived" to true, "updatedAt" to System.currentTimeMillis())).await()
-            Log.d(TAG, "Product $docId archived in Firestore")
+            val directRef = firestore.collection("products").document(docId)
+            batch.delete(directRef)
+
+            // Also search by SKU or name to ensure any duplicate doc is deleted
+            if (product.sku.isNotBlank()) {
+                val skuSnap = firestore.collection("products")
+                    .whereEqualTo("shopId", shopId)
+                    .whereEqualTo("sku", product.sku)
+                    .get()
+                    .await()
+                for (doc in skuSnap.documents) {
+                    batch.delete(doc.reference)
+                }
+            }
+
+            if (product.name.isNotBlank()) {
+                val nameSnap = firestore.collection("products")
+                    .whereEqualTo("shopId", shopId)
+                    .whereEqualTo("name", product.name)
+                    .get()
+                    .await()
+                for (doc in nameSnap.documents) {
+                    batch.delete(doc.reference)
+                }
+            }
+
+            batch.commit().await()
+            Log.d(TAG, "Product $docId (${product.name}) permanently deleted from Firestore")
         } catch (e: Exception) {
-            Log.w(TAG, "Product archive in Firestore queued/cached: ${e.message}")
+            val isPermDenied = e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ||
+                (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED)
+            if (isPermDenied) {
+                Log.d(TAG, "Product delete local offline mode")
+            } else {
+                Log.w(TAG, "Product delete in Firestore queued/cached: ${e.message}")
+            }
         }
     }
 
@@ -1365,6 +1481,38 @@ class FirebaseSyncRepository(
             )
         } catch (e: Exception) {
             Log.w(TAG, "Background Firestore purchase update sync error: ${e.message}")
+        }
+    }
+
+    /**
+     * Deletes a Purchase record in Firestore
+     */
+    suspend fun syncPurchaseDeleteToCloud(
+        purchaseId: Long,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        try {
+            transactionManager.executePurchaseDeleteTransaction(shopId, purchaseId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Background Firestore purchase delete sync error: ${e.message}")
+        }
+    }
+
+    /**
+     * Cancels a Sale in Firestore
+     */
+    suspend fun syncSaleCancelToCloud(
+        saleId: Long,
+        invoiceNumber: String,
+        reason: String,
+        shopId: String = FirebaseManager.currentShopId
+    ) = withContext(Dispatchers.IO) {
+        if (FirebaseManager.auth?.currentUser == null) return@withContext
+        try {
+            transactionManager.executeSaleCancelTransaction(shopId, saleId, invoiceNumber, reason)
+        } catch (e: Exception) {
+            Log.w(TAG, "Background Firestore sale cancel sync error: ${e.message}")
         }
     }
 }

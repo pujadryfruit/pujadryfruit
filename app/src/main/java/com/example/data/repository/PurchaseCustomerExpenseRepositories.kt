@@ -133,6 +133,38 @@ class PurchaseRepository(
             purchaseDao.updatePurchase(updatedPurchase.copy(id = purchaseId))
         }
     }
+
+    /**
+     * Deletes a Purchase record and reverts the stock incremented by this purchase.
+     */
+    suspend fun deletePurchase(purchaseId: Long) {
+        database.withTransaction {
+            val items = purchaseDao.getPurchaseItemsSync(purchaseId)
+            val purchase = purchaseDao.getPurchaseById(purchaseId)
+
+            for (item in items) {
+                val product = productDao.getProductById(item.productId)
+                val currentStock = product?.currentStock ?: 0.0
+                val revertedStock = (currentStock - item.quantity).coerceAtLeast(0.0)
+                productDao.updateStock(item.productId, -item.quantity)
+                stockAuditDao.insertAudit(
+                    StockAuditEntity(
+                        productId = item.productId,
+                        productName = item.productName,
+                        changeType = "PURCHASE_DELETED",
+                        quantityChanged = -item.quantity,
+                        previousStock = currentStock,
+                        newStock = revertedStock,
+                        referenceId = if (purchase != null && purchase.invoiceReference.isNotBlank()) purchase.invoiceReference else "PUR-$purchaseId",
+                        reason = "Purchase Deleted: Reverted stock"
+                    )
+                )
+            }
+
+            purchaseDao.deletePurchaseItemsByPurchaseId(purchaseId)
+            purchaseDao.deletePurchaseById(purchaseId)
+        }
+    }
 }
 
 class SupplierRepository(

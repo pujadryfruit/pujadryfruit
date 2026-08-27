@@ -275,6 +275,14 @@ fun InventoryScreen(
                         }
                     }
                 },
+                onDelete = if (editingProduct != null) {
+                    {
+                        val prod = editingProduct
+                        showAddEditSheet = false
+                        productToDelete = prod
+                        showDeleteConfirmDialog = true
+                    }
+                } else null,
                 onCancel = { showAddEditSheet = false }
             )
         }
@@ -353,25 +361,35 @@ fun InventoryScreen(
 
     // Delete Confirmation Dialog
     if (showDeleteConfirmDialog && productToDelete != null) {
+        val targetProd = productToDelete!!
         AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Archive Product?") },
+            onDismissRequest = { 
+                showDeleteConfirmDialog = false
+                productToDelete = null
+            },
+            title = { Text("Delete Product from Inventory?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Are you sure you want to remove '${productToDelete!!.name}' from active catalog? Past invoices referencing this product will be preserved.")
+                Text("Are you sure you want to permanently delete '${targetProd.name}'? This will remove the item from your inventory and delete it from Firebase cloud.")
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteProduct(productToDelete!!.id)
+                        val targetId = targetProd.id
                         showDeleteConfirmDialog = false
+                        productToDelete = null
+                        viewModel.deleteProduct(targetId)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed)
+                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+                    modifier = Modifier.testTag("confirm_delete_product_btn")
                 ) {
-                    Text("Archive / Delete")
+                    Text("Delete Product")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                TextButton(onClick = { 
+                    showDeleteConfirmDialog = false 
+                    productToDelete = null
+                }) {
                     Text("Cancel")
                 }
             }
@@ -500,15 +518,24 @@ fun ProductItemCard(
                     fontSize = 11.sp
                 )
 
-                Row {
-                    IconButton(onClick = onAdjustStock, modifier = Modifier.size(32.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = onAdjustStock, 
+                        modifier = Modifier.size(36.dp).testTag("adjust_stock_btn_${product.id}")
+                    ) {
                         Icon(Icons.Default.Tune, contentDescription = "Adjust Stock", tint = GeometricPrimary, modifier = Modifier.size(18.dp))
                     }
-                    IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+                    IconButton(
+                        onClick = onEdit, 
+                        modifier = Modifier.size(36.dp).testTag("edit_product_btn_${product.id}")
+                    ) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                     }
-                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = ErrorRed, modifier = Modifier.size(18.dp))
+                    IconButton(
+                        onClick = onDelete, 
+                        modifier = Modifier.size(36.dp).testTag("delete_product_btn_${product.id}")
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete Product", tint = ErrorRed, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -520,6 +547,7 @@ fun ProductItemCard(
 fun AddEditProductSheetContent(
     product: ProductEntity?,
     onSave: (ProductEntity, onFinished: () -> Unit) -> Unit,
+    onDelete: (() -> Unit)? = null,
     onCancel: () -> Unit
 ) {
     // Determine initial product type: LOOSE (KG/Gram) or PACKET (PCS/Packet/Box)
@@ -892,6 +920,25 @@ fun AddEditProductSheetContent(
                     text = if (product == null) "Save Product to Catalog" else "Update Product Details",
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+
+        if (product != null && onDelete != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onDelete,
+                enabled = !isSaving,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("delete_product_sheet_btn"),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed),
+                border = androidx.compose.foundation.BorderStroke(1.dp, ErrorRed.copy(alpha = 0.5f))
+            ) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Delete Product from Inventory", fontWeight = FontWeight.SemiBold)
             }
         }
     }
