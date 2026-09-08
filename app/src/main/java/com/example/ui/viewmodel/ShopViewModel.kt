@@ -815,17 +815,27 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             }
             val totalAmount = purchaseItems.sumOf { it.totalAmount }
 
+            val isPaid = paymentStatus.equals("PAID", true)
+            val finalMethod = if (isPaid && paymentMethod.contains("Credit", true)) {
+                "Cash"
+            } else if (!isPaid && !paymentMethod.contains("Credit", true)) {
+                "Credit / Udhaar"
+            } else {
+                paymentMethod
+            }
+            val finalStatus = if (isPaid) "PAID" else "UNPAID"
+
             val purchase = PurchaseEntity(
                 supplierName = supplierName.trim(),
                 supplierPhone = supplierPhone.trim(),
                 invoiceReference = invoiceRef.trim(),
                 totalAmount = totalAmount,
-                paymentStatus = paymentStatus,
-                paymentMethod = paymentMethod,
+                paymentStatus = finalStatus,
+                paymentMethod = finalMethod,
                 notes = notes.trim()
             )
             val purchaseId = purchaseRepo.createPurchase(purchase, purchaseItems)
-            _uiEventMessage.emit("Stock inward of ${items.size} products recorded!")
+            _uiEventMessage.emit("Stock inward of ${items.size} products recorded ($finalStatus)!")
 
             // Sync purchase to Firebase Firestore atomically in background
             launch {
@@ -854,6 +864,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         onComplete: ((Boolean) -> Unit)? = null
     ) {
         viewModelScope.launch {
+            val oldPurchase = purchaseRepo.getPurchaseById(purchaseId)
             val oldItems = purchaseRepo.getPurchaseItemsSync(purchaseId)
             val purchaseItems = items.map { (prod, qty) ->
                 val pPrice = priceOverrides[prod.id] ?: prod.purchasePrice
@@ -868,6 +879,16 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             val totalAmount = purchaseItems.sumOf { it.totalAmount }
+            val isPaid = paymentStatus.equals("PAID", true)
+            val finalMethod = if (isPaid && paymentMethod.contains("Credit", true)) {
+                "Cash"
+            } else if (!isPaid && !paymentMethod.contains("Credit", true)) {
+                "Credit / Udhaar"
+            } else {
+                paymentMethod
+            }
+            val finalStatus = if (isPaid) "PAID" else "UNPAID"
+
             val updatedPurchase = PurchaseEntity(
                 id = purchaseId,
                 purchaseDate = oldPurchase?.purchaseDate ?: System.currentTimeMillis(),
@@ -875,14 +896,13 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 supplierPhone = supplierPhone.trim(),
                 invoiceReference = invoiceRef.trim(),
                 totalAmount = totalAmount,
-                paymentStatus = paymentStatus,
-                paymentMethod = paymentMethod,
+                paymentStatus = finalStatus,
+                paymentMethod = finalMethod,
                 notes = notes.trim(),
                 createdAt = oldPurchase?.createdAt ?: System.currentTimeMillis()
             )
             purchaseRepo.updatePurchase(purchaseId, updatedPurchase, purchaseItems)
-            val statusText = if (paymentStatus.equals("PAID", true)) "PAID" else "UNPAID"
-            _uiEventMessage.emit("Stock inward #${purchaseId} updated ($statusText)!")
+            _uiEventMessage.emit("Stock inward #${purchaseId} updated ($finalStatus)!")
             launch {
                 syncRepo.syncPurchaseUpdateToCloud(updatedPurchase, purchaseItems, oldItems)
                 val supp = supplierRepo.getSupplierByName(updatedPurchase.supplierName)

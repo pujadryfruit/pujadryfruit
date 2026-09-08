@@ -57,16 +57,93 @@ fun PurchaseScreen(
     var purchaseToEdit by remember { mutableStateOf<PurchaseEntity?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var filterByDate by remember { mutableStateOf(false) }
+    var statusFilter by remember { mutableStateOf("ALL") } // ALL, UNPAID, PAID
 
     val activePurchases = if (filterByDate) purchasesInDateRange else purchases
+    val unpaidPurchasesCount = activePurchases.count { !it.paymentStatus.equals("PAID", true) || it.paymentMethod.contains("Credit", true) }
+    val paidPurchasesCount = activePurchases.count { it.paymentStatus.equals("PAID", true) && !it.paymentMethod.contains("Credit", true) }
 
     val filteredPurchases = activePurchases.filter { p ->
-        searchQuery.isBlank() ||
+        val matchesSearch = searchQuery.isBlank() ||
                 p.supplierName.contains(searchQuery, ignoreCase = true) ||
                 p.invoiceReference.contains(searchQuery, ignoreCase = true)
+        val isPaid = p.paymentStatus.equals("PAID", true) && !p.paymentMethod.contains("Credit", true)
+        val matchesStatus = when (statusFilter) {
+            "UNPAID" -> !isPaid
+            "PAID" -> isPaid
+            else -> true
+        }
+        matchesSearch && matchesStatus
     }
 
     var purchaseToDelete by remember { mutableStateOf<PurchaseEntity?>(null) }
+    var purchaseToMarkPaid by remember { mutableStateOf<PurchaseEntity?>(null) }
+    var markPaidPaymentMethod by remember { mutableStateOf("Cash") }
+    var isMarkingPaid by remember { mutableStateOf(false) }
+
+    if (purchaseToMarkPaid != null) {
+        val target = purchaseToMarkPaid!!
+        AlertDialog(
+            onDismissRequest = { if (!isMarkingPaid) purchaseToMarkPaid = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Mark as Paid (भुगतान करें)", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Supplier: ${target.supplierName}\nInvoice: ${if (target.invoiceReference.isNotEmpty()) target.invoiceReference else "PUR-${target.id}"}\nAmount: ${CurrencyUtils.formatInr(target.totalAmount)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "Select Payment Mode (भुगतान माध्यम):",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("Cash", "UPI", "Bank Transfer", "Cheque").forEach { mode ->
+                            FilterChip(
+                                selected = mode == markPaidPaymentMethod,
+                                onClick = { markPaidPaymentMethod = mode },
+                                label = { Text(mode) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isMarkingPaid = true
+                        viewModel.markPurchaseAsPaid(target.id, markPaidPaymentMethod) {
+                            isMarkingPaid = false
+                            purchaseToMarkPaid = null
+                        }
+                    },
+                    enabled = !isMarkingPaid,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A))
+                ) {
+                    Text(if (isMarkingPaid) "Updating..." else "Confirm Paid")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { purchaseToMarkPaid = null },
+                    enabled = !isMarkingPaid
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     if (purchaseToDelete != null) {
         val targetPurchase = purchaseToDelete!!
@@ -225,6 +302,45 @@ fun PurchaseScreen(
                 )
             }
 
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = statusFilter == "ALL",
+                        onClick = { statusFilter = "ALL" },
+                        label = { Text("All Purchases (${activePurchases.size})") }
+                    )
+                    FilterChip(
+                        selected = statusFilter == "UNPAID",
+                        onClick = { statusFilter = "UNPAID" },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFFEE2E2),
+                            selectedLabelColor = Color(0xFF991B1B)
+                        ),
+                        leadingIcon = if (statusFilter == "UNPAID") {
+                            { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFDC2626)) }
+                        } else null,
+                        label = { Text("Pending Udhaar ($unpaidPurchasesCount)") }
+                    )
+                    FilterChip(
+                        selected = statusFilter == "PAID",
+                        onClick = { statusFilter = "PAID" },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFDCFCE7),
+                            selectedLabelColor = Color(0xFF166534)
+                        ),
+                        leadingIcon = if (statusFilter == "PAID") {
+                            { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF16A34A)) }
+                        } else null,
+                        label = { Text("Paid ($paidPurchasesCount)") }
+                    )
+                }
+            }
+
             if (filteredPurchases.isEmpty()) {
                 item {
                     EmptyStateCard(
@@ -240,7 +356,8 @@ fun PurchaseScreen(
                     PurchaseCard(
                         purchase = purchase,
                         onEditClick = { purchaseToEdit = purchase },
-                        onDeleteClick = { purchaseToDelete = purchase }
+                        onDeleteClick = { purchaseToDelete = purchase },
+                        onMarkPaidClick = { purchaseToMarkPaid = purchase }
                     )
                 }
             }
@@ -312,8 +429,11 @@ fun PurchaseScreen(
 fun PurchaseCard(
     purchase: PurchaseEntity,
     onEditClick: () -> Unit = {},
-    onDeleteClick: () -> Unit = {}
+    onDeleteClick: () -> Unit = {},
+    onMarkPaidClick: () -> Unit = {}
 ) {
+    val isPaid = purchase.paymentStatus.equals("PAID", true) && !purchase.paymentMethod.contains("Credit", true)
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -342,7 +462,7 @@ fun PurchaseCard(
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusBadge(status = purchase.paymentStatus)
+                    StatusBadge(status = if (isPaid) "PAID" else "UNPAID")
                     Spacer(modifier = Modifier.width(4.dp))
                     IconButton(onClick = onEditClick, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit Stock In", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
@@ -380,6 +500,51 @@ fun PurchaseCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+
+            if (!isPaid) {
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            tint = Color(0xFFDC2626),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "उधार बाकी (Pending Udhaar)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFDC2626)
+                        )
+                    }
+                    Button(
+                        onClick = onMarkPaidClick,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF16A34A),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Mark Paid (चुका दिया)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
         }
     }
@@ -421,7 +586,13 @@ fun AddPurchaseSheetContent(
 
     var invoiceRef by remember(initialPurchase) { mutableStateOf(initialPurchase?.invoiceReference ?: "") }
     var paymentMethod by remember(initialPurchase) { mutableStateOf(initialPurchase?.paymentMethod ?: "Bank Transfer") }
-    var paymentStatus by remember(initialPurchase) { mutableStateOf(initialPurchase?.paymentStatus ?: "PAID") }
+    var paymentStatus by remember(initialPurchase) {
+        mutableStateOf(
+            if (initialPurchase != null) {
+                if (initialPurchase.paymentStatus.equals("PAID", true) && !initialPurchase.paymentMethod.contains("Credit", true)) "PAID" else "UNPAID"
+            } else "PAID"
+        )
+    }
     var notes by remember(initialPurchase) { mutableStateOf(initialPurchase?.notes ?: "") }
 
     // Searchable Product Dropdown & Added items
@@ -746,9 +917,76 @@ fun AddPurchaseSheetContent(
                 }
             }
 
-            // Payment Method & Status
+            // Payment Status & Method
             item {
-                Text("Payment Method", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Payment Status (भुगतान स्थिति)",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isPaid = paymentStatus.equals("PAID", true)
+                    FilterChip(
+                        selected = isPaid,
+                        onClick = {
+                            paymentStatus = "PAID"
+                            if (paymentMethod.contains("Credit", true)) {
+                                paymentMethod = "Cash"
+                            }
+                        },
+                        leadingIcon = if (isPaid) {
+                            { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF16A34A)) }
+                        } else null,
+                        label = {
+                            Text(
+                                "PAID (चुका दिया)",
+                                fontWeight = if (isPaid) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFDCFCE7),
+                            selectedLabelColor = Color(0xFF166534)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = !isPaid,
+                        onClick = {
+                            paymentStatus = "UNPAID"
+                            paymentMethod = "Credit / Udhaar"
+                        },
+                        leadingIcon = if (!isPaid) {
+                            { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFDC2626)) }
+                        } else null,
+                        label = {
+                            Text(
+                                "UNPAID (उधार / बाकी)",
+                                fontWeight = if (!isPaid) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFFEE2E2),
+                            selectedLabelColor = Color(0xFF991B1B)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Payment Mode (भुगतान माध्यम)",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(4.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -756,12 +994,15 @@ fun AddPurchaseSheetContent(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     paymentMethods.forEach { method ->
+                        val isSelected = method == paymentMethod
                         FilterChip(
-                            selected = method == paymentMethod,
+                            selected = isSelected,
                             onClick = {
                                 paymentMethod = method
                                 if (method.contains("Credit", true)) {
                                     paymentStatus = "UNPAID"
+                                } else {
+                                    paymentStatus = "PAID"
                                 }
                             },
                             label = { Text(method) }
@@ -1102,12 +1343,22 @@ fun AddPurchaseSheetContent(
                 if (supplierFinalName.isNotBlank() && selectedItems.isNotEmpty() && !isSavingPurchase) {
                     isSavingPurchase = true
                     val itemList = selectedItems.values.toList()
+                    val isPaid = paymentStatus.equals("PAID", true)
+                    val finalMethod = if (isPaid && paymentMethod.contains("Credit", true)) {
+                        "Cash"
+                    } else if (!isPaid && !paymentMethod.contains("Credit", true)) {
+                        "Credit / Udhaar"
+                    } else {
+                        paymentMethod
+                    }
+                    val finalStatus = if (isPaid) "PAID" else "UNPAID"
+
                     onSave(
                         supplierFinalName,
                         supplierPhone.trim(),
                         invoiceRef.trim(),
-                        paymentMethod,
-                        paymentStatus,
+                        finalMethod,
+                        finalStatus,
                         notes.trim(),
                         itemList,
                         priceOverrides.toMap()

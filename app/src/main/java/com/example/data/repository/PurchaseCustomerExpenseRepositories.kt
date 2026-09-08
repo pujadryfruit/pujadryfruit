@@ -42,7 +42,8 @@ class PurchaseRepository(
 
             // Update Supplier record and outstanding balance for Udhaar
             if (purchase.supplierName.isNotBlank()) {
-                val isUnpaid = purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true)
+                val isExplicitlyPaid = purchase.paymentStatus.equals("PAID", true)
+                val isUnpaid = !isExplicitlyPaid && (purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true))
                 val balanceDelta = if (isUnpaid) purchase.totalAmount else 0.0
                 val existingSupp = supplierDao.getSupplierByName(purchase.supplierName.trim())
                 if (existingSupp != null) {
@@ -95,18 +96,48 @@ class PurchaseRepository(
             val oldPurchase = purchaseDao.getPurchaseById(purchaseId)
             val oldItems = purchaseDao.getPurchaseItemsSync(purchaseId)
 
+            // Normalize payment method and status
+            val isExplicitlyPaid = updatedPurchase.paymentStatus.equals("PAID", true)
+            val finalMethod = if (isExplicitlyPaid && updatedPurchase.paymentMethod.contains("Credit", true)) {
+                "Cash"
+            } else if (!isExplicitlyPaid && !updatedPurchase.paymentMethod.contains("Credit", true)) {
+                "Credit / Udhaar"
+            } else {
+                updatedPurchase.paymentMethod
+            }
+            val finalStatus = if (isExplicitlyPaid) "PAID" else "UNPAID"
+            val sanitizedUpdatedPurchase = updatedPurchase.copy(
+                id = purchaseId,
+                paymentStatus = finalStatus,
+                paymentMethod = finalMethod
+            )
+
             // Update supplier balance if udhaar changed
-            val oldWasUnpaid = oldPurchase?.paymentStatus?.equals("UNPAID", true) == true || oldPurchase?.paymentMethod?.contains("Credit", true) == true
+            val oldWasUnpaid = (oldPurchase?.paymentStatus?.equals("UNPAID", true) == true || oldPurchase?.paymentMethod?.contains("Credit", true) == true) && oldPurchase?.paymentStatus?.equals("PAID", true) != true
             val oldDue = if (oldWasUnpaid) (oldPurchase?.totalAmount ?: 0.0) else 0.0
 
-            val newIsUnpaid = updatedPurchase.paymentStatus.equals("UNPAID", true) || updatedPurchase.paymentMethod.contains("Credit", true)
-            val newDue = if (newIsUnpaid) updatedPurchase.totalAmount else 0.0
+            val newIsUnpaid = !isExplicitlyPaid
+            val newDue = if (newIsUnpaid) sanitizedUpdatedPurchase.totalAmount else 0.0
 
             val balanceDelta = newDue - oldDue
-            val purchaseTotalDelta = updatedPurchase.totalAmount - (oldPurchase?.totalAmount ?: 0.0)
+            val purchaseTotalDelta = sanitizedUpdatedPurchase.totalAmount - (oldPurchase?.totalAmount ?: 0.0)
 
-            if (updatedPurchase.supplierName.isNotBlank()) {
-                val existingSupp = supplierDao.getSupplierByName(updatedPurchase.supplierName.trim())
+            if (oldPurchase != null && oldPurchase.supplierName.isNotBlank() &&
+                !oldPurchase.supplierName.equals(sanitizedUpdatedPurchase.supplierName.trim(), ignoreCase = true)
+            ) {
+                val oldSupp = supplierDao.getSupplierByName(oldPurchase.supplierName.trim())
+                if (oldSupp != null) {
+                    val oldAmt = oldPurchase.totalAmount
+                    val oldBalRevert = if (oldWasUnpaid) oldPurchase.totalAmount else 0.0
+                    supplierDao.recordPurchaseWithBalance(oldSupp.id, -oldAmt, -oldBalRevert)
+                }
+                val newSupp = supplierDao.getSupplierByName(sanitizedUpdatedPurchase.supplierName.trim())
+                if (newSupp != null) {
+                    val newBalAdd = if (newIsUnpaid) sanitizedUpdatedPurchase.totalAmount else 0.0
+                    supplierDao.recordPurchaseWithBalance(newSupp.id, sanitizedUpdatedPurchase.totalAmount, newBalAdd)
+                }
+            } else if (sanitizedUpdatedPurchase.supplierName.isNotBlank()) {
+                val existingSupp = supplierDao.getSupplierByName(sanitizedUpdatedPurchase.supplierName.trim())
                 if (existingSupp != null) {
                     supplierDao.recordPurchaseWithBalance(existingSupp.id, purchaseTotalDelta, balanceDelta)
                 }
@@ -126,7 +157,7 @@ class PurchaseRepository(
                         quantityChanged = -oldItem.quantity,
                         previousStock = currentStock,
                         newStock = revertedStock,
-                        referenceId = if (updatedPurchase.invoiceReference.isNotBlank()) updatedPurchase.invoiceReference else "PUR-$purchaseId",
+                        referenceId = if (sanitizedUpdatedPurchase.invoiceReference.isNotBlank()) sanitizedUpdatedPurchase.invoiceReference else "PUR-$purchaseId",
                         reason = "Stock Inward Edited: Reverted old stock"
                     )
                 )
@@ -151,14 +182,14 @@ class PurchaseRepository(
                         quantityChanged = newItem.quantity,
                         previousStock = currentStock,
                         newStock = appliedStock,
-                        referenceId = if (updatedPurchase.invoiceReference.isNotBlank()) updatedPurchase.invoiceReference else "PUR-$purchaseId",
-                        reason = "Stock Inward Edited: Applied updated stock from ${updatedPurchase.supplierName}"
+                        referenceId = if (sanitizedUpdatedPurchase.invoiceReference.isNotBlank()) sanitizedUpdatedPurchase.invoiceReference else "PUR-$purchaseId",
+                        reason = "Stock Inward Edited: Applied updated stock from ${sanitizedUpdatedPurchase.supplierName}"
                     )
                 )
             }
 
             // 4. Update the Purchase record
-            purchaseDao.updatePurchase(updatedPurchase.copy(id = purchaseId))
+            purchaseDao.updatePurchase(sanitizedUpdatedPurchase)
         }
     }
 
@@ -171,8 +202,9 @@ class PurchaseRepository(
             val purchase = purchaseDao.getPurchaseById(purchaseId)
 
             if (purchase != null && purchase.supplierName.isNotBlank()) {
-                val isUnpaid = purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true)
-                val balanceDelta = if (isUnpaid) -purchase.totalAmount else 0.0
+                val wasExplicitlyPaid = purchase.paymentStatus.equals("PAID", true)
+                val wasUnpaid = !wasExplicitlyPaid && (purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true))
+                val balanceDelta = if (wasUnpaid) -purchase.totalAmount else 0.0
                 val existingSupp = supplierDao.getSupplierByName(purchase.supplierName.trim())
                 if (existingSupp != null) {
                     supplierDao.recordPurchaseWithBalance(existingSupp.id, -purchase.totalAmount, balanceDelta)

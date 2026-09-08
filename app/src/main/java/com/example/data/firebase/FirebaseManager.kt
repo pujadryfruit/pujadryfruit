@@ -2,6 +2,7 @@ package com.example.data.firebase
 
 import android.content.Context
 import android.util.Log
+import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
@@ -18,7 +19,11 @@ object FirebaseManager {
     const val FIREBASE_PROJECT_ID = "puja-dryfruits"
     const val FIREBASE_STORAGE_BUCKET = "puja-dryfruits.firebasestorage.app"
     const val FIREBASE_APP_ID = "1:748428498825:android:23d86a5e757ef38c39b358"
-    const val FIREBASE_API_KEY = "AIzaSyBxz7eYkFFkCOdr8tcmajh36DkS8E_biIw"
+    val FIREBASE_API_KEY: String = try {
+        BuildConfig.FIREBASE_API_KEY.ifEmpty { "AIzaSyBxz7eYkFFkCOdr8tcmajh36DkS8E_biIw" }
+    } catch (e: Throwable) {
+        "AIzaSyBxz7eYkFFkCOdr8tcmajh36DkS8E_biIw"
+    }
 
     private var _isInitialized = false
     val isInitialized: Boolean get() = _isInitialized
