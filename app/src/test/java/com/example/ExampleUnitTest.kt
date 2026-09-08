@@ -67,4 +67,33 @@ class ExampleUnitTest {
     assertEquals("February 2026 (01 Feb - 28 Feb)", resolved.displayLabel)
     assertEquals(DateFilterRange.SELECT_MONTH_YEAR, resolved.filterType)
   }
+
+  @Test
+  fun testAuthStateResetAndImmediateRetry() = kotlinx.coroutines.runBlocking {
+    val service = com.example.data.firebase.FirebaseAuthService(
+      authProvider = { null },
+      firestoreProvider = { null }
+    )
+    // Initial state should be Unauthenticated when auth is not present
+    assertTrue(service.authState.value is com.example.data.firebase.FirebaseAuthService.AuthState.Unauthenticated)
+
+    // Attempting email login with unavailable auth returns failure and sets Error state
+    val result1 = service.signInWithEmailPassword("user@example.com", "wrongpass")
+    assertTrue(result1.isFailure)
+    assertTrue(service.authState.value is com.example.data.firebase.FirebaseAuthService.AuthState.Error)
+
+    // Clearing error returns state to Unauthenticated without restart
+    service.clearError()
+    assertTrue(service.authState.value is com.example.data.firebase.FirebaseAuthService.AuthState.Unauthenticated)
+
+    // PIN sign-in failure sets Error state
+    val pinResult = service.signInWithPin("0000", "1234")
+    assertTrue(pinResult.isFailure)
+    assertTrue(service.authState.value is com.example.data.firebase.FirebaseAuthService.AuthState.Error)
+
+    // Immediate retry with correct PIN succeeds without needing app restart
+    val correctPinResult = service.signInWithPin("1234", "1234")
+    assertTrue(correctPinResult.isSuccess)
+    assertTrue(service.authState.value is com.example.data.firebase.FirebaseAuthService.AuthState.Authenticated)
+  }
 }

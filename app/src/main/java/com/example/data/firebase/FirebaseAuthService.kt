@@ -18,12 +18,16 @@ import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 class FirebaseAuthService(
     private val authProvider: () -> FirebaseAuth? = { FirebaseManager.auth },
@@ -62,10 +66,15 @@ class FirebaseAuthService(
                     val user = firebaseAuth.currentUser
                     if (user != null) {
                         FirebaseManager.currentUserId = user.uid
-                        fetchOrCreateUserDoc(user)
+                        // Only fetch if not already Authenticated with the same user ID to prevent redundant cycles
+                        val existing = _authState.value
+                        if (existing !is AuthState.Authenticated || existing.user?.uid != user.uid) {
+                            fetchOrCreateUserDoc(user)
+                        }
                     } else {
-                        // Only transition to Unauthenticated if not currently in an Error state
-                        if (_authState.value !is AuthState.Error) {
+                        // User signed out or not logged in.
+                        // Only reset to Unauthenticated if not currently displaying a login error or actively loading
+                        if (_authState.value !is AuthState.Error && _authState.value !is AuthState.Loading) {
                             _currentUserDoc.value = null
                             _authState.value = AuthState.Unauthenticated
                         }
@@ -82,43 +91,58 @@ class FirebaseAuthService(
     }
 
     suspend fun signInWithGoogle(context: Context, serverClientId: String = FirebaseManager.OAUTH_WEB_CLIENT_ID): Result<UserDoc> = withContext(Dispatchers.IO) {
-        val auth = authProvider() ?: return@withContext Result.failure(Exception("Firebase Auth not initialized"))
+        val auth = authProvider() ?: run {
+            val msg = "Firebase Auth service is unavailable."
+            _authState.value = AuthState.Error(msg)
+            return@withContext Result.failure(Exception(msg))
+        }
         _authState.value = AuthState.Loading
         try {
-            val credentialManager = CredentialManager.create(context)
-            val clientId = if (serverClientId.isNotEmpty()) serverClientId else FirebaseManager.OAUTH_WEB_CLIENT_ID
-            
-            val googleIdOption = GetGoogleIdOption.Builder()
-                .setFilterByAuthorizedAccounts(false)
-                .setServerClientId(clientId)
-                .setAutoSelectEnabled(false)
-                .build()
-
-            val request = GetCredentialRequest.Builder()
-                .addCredentialOption(googleIdOption)
-                .build()
-
-            val response: GetCredentialResponse = credentialManager.getCredential(context, request)
-            val credential = response.credential
-
-            if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                val authResult: AuthResult = auth.signInWithCredential(authCredential).await()
-                val user = authResult.user ?: throw Exception("Failed to get Firebase User from Google credential")
-                val userEmail = user.email?.lowercase()?.trim() ?: ""
+            val userDoc = withTimeout(20_000L) {
+                val credentialManager = CredentialManager.create(context)
+                val clientId = if (serverClientId.isNotEmpty()) serverClientId else FirebaseManager.OAUTH_WEB_CLIENT_ID
                 
-                val userDoc = syncUserDocument(user)
-                FirebaseManager.currentUserId = user.uid
-                _currentUserDoc.value = userDoc
-                _authState.value = AuthState.Authenticated(user, userDoc)
-                Result.success(userDoc)
-            } else {
-                throw Exception("Unrecognized Google Credential response from device")
+                val googleIdOption = GetGoogleIdOption.Builder()
+                    .setFilterByAuthorizedAccounts(false)
+                    .setServerClientId(clientId)
+                    .setAutoSelectEnabled(false)
+                    .build()
+
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .build()
+
+                val response: GetCredentialResponse = credentialManager.getCredential(context, request)
+                val credential = response.credential
+
+                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                    val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
+                    val authResult: AuthResult = auth.signInWithCredential(authCredential).await()
+                    val user = authResult.user ?: throw Exception("Failed to get user profile from Google credential")
+                    
+                    val userDoc = try {
+                        syncUserDocument(user)
+                    } catch (e: Exception) {
+                        createDefaultUserDoc(user)
+                    }
+                    FirebaseManager.currentUserId = user.uid
+                    _currentUserDoc.value = userDoc
+                    _authState.value = AuthState.Authenticated(user, userDoc)
+                    userDoc
+                } else {
+                    throw Exception("Unrecognized Google Credential response from device")
+                }
             }
-        } catch (e: Exception) {
+            Result.success(userDoc)
+        } catch (e: Throwable) {
+            if (e is CancellationException && e !is TimeoutCancellationException) {
+                _authState.value = AuthState.Unauthenticated
+                throw e
+            }
             Log.e(TAG, "Google Sign-in failed: ${e.message}", e)
             val friendlyMsg = when {
+                e is TimeoutCancellationException -> "Google Sign-in request timed out. Please try again."
                 e.message?.contains("user canceled", ignoreCase = true) == true ||
                 e.message?.contains("cancelled", ignoreCase = true) == true ||
                 e.message?.contains("16:", ignoreCase = true) == true -> "Google sign-in was cancelled."
@@ -131,6 +155,12 @@ class FirebaseAuthService(
             }
             _authState.value = AuthState.Error(friendlyMsg)
             Result.failure(Exception(friendlyMsg))
+        }
+    }
+
+    fun resetAuthState() {
+        if (_authState.value !is AuthState.Authenticated) {
+            _authState.value = AuthState.Unauthenticated
         }
     }
 
@@ -170,13 +200,20 @@ class FirebaseAuthService(
     }
 
     suspend fun signInWithEmailPassword(email: String, pass: String): Result<UserDoc> = withContext(Dispatchers.IO) {
-        val auth = authProvider() ?: return@withContext Result.failure(Exception("Firebase Auth not initialized"))
+        val auth = authProvider() ?: run {
+            val msg = "Firebase Authentication service is not initialized."
+            _authState.value = AuthState.Error(msg)
+            return@withContext Result.failure(Exception(msg))
+        }
         _authState.value = AuthState.Loading
         val trimmedEmail = email.trim()
         val trimmedPass = pass.trim()
         try {
-            val result = auth.signInWithEmailAndPassword(trimmedEmail, trimmedPass).await()
-            val user = result.user ?: throw Exception("User not found")
+            // Strict timeout so a dead network socket never hangs forever
+            val result = withTimeout(15_000L) {
+                auth.signInWithEmailAndPassword(trimmedEmail, trimmedPass).await()
+            }
+            val user = result.user ?: throw Exception("User profile not found")
             val userDoc = try {
                 syncUserDocument(user)
             } catch (e: Exception) {
@@ -187,20 +224,25 @@ class FirebaseAuthService(
             _currentUserDoc.value = userDoc
             _authState.value = AuthState.Authenticated(user, userDoc)
             Result.success(userDoc)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            if (e is CancellationException && e !is TimeoutCancellationException) {
+                _authState.value = AuthState.Unauthenticated
+                throw e
+            }
             Log.e(TAG, "Email login error: ${e.message}", e)
             val friendlyMsg = when {
+                e is TimeoutCancellationException -> "Login request timed out. Please check your internet connection and try again."
                 e is FirebaseAuthInvalidCredentialsException ||
                 e.message?.contains("credential", ignoreCase = true) == true ||
                 e.message?.contains("invalid", ignoreCase = true) == true ||
-                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect email or password. Please check your credentials or use 'Continue with Google'."
+                e.message?.contains("password", ignoreCase = true) == true -> "Incorrect email or password. Please verify and try again."
                 e is FirebaseAuthInvalidUserException ||
                 e.message?.contains("user-not-found", ignoreCase = true) == true ||
-                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found for $trimmedEmail. Please check your email address or use 'Continue with Google'."
+                e.message?.contains("no user record", ignoreCase = true) == true -> "No account found for $trimmedEmail. Please check your email address."
                 e.message?.contains("network", ignoreCase = true) == true ||
                 e.message?.contains("timeout", ignoreCase = true) == true -> "Network connection error. Please check your internet connection."
                 e.message?.contains("too-many-requests", ignoreCase = true) == true -> "Too many failed attempts. Please wait a few moments and try again."
-                else -> "Incorrect email or password. Please verify and try again."
+                else -> e.localizedMessage ?: "Incorrect email or password. Please verify and try again."
             }
             _authState.value = AuthState.Error(friendlyMsg)
             Result.failure(Exception(friendlyMsg))
@@ -365,29 +407,24 @@ class FirebaseAuthService(
     }
 
     private fun fetchOrCreateUserDoc(user: FirebaseUser) {
-        val firestore = firestoreProvider()
-        if (firestore == null) {
-            val defaultDoc = createDefaultUserDoc(user)
-            _currentUserDoc.value = defaultDoc
-            _authState.value = AuthState.Authenticated(user, defaultDoc)
-            return
-        }
+        val defaultDoc = createDefaultUserDoc(user)
+        // Immediately set Authenticated with defaultDoc so the user session and navigation are unblocked
+        _currentUserDoc.value = defaultDoc
+        _authState.value = AuthState.Authenticated(user, defaultDoc)
+
+        val firestore = firestoreProvider() ?: return
         firestore.collection("users").document(user.uid).get()
             .addOnSuccessListener { doc ->
-                val userDoc = if (doc.exists()) {
-                    doc.toObject(UserDoc::class.java) ?: createDefaultUserDoc(user)
+                if (doc != null && doc.exists()) {
+                    val userDoc = doc.toObject(UserDoc::class.java) ?: defaultDoc
+                    _currentUserDoc.value = userDoc
+                    _authState.value = AuthState.Authenticated(user, userDoc)
                 } else {
-                    val newDoc = createDefaultUserDoc(user)
-                    firestore.collection("users").document(user.uid).set(newDoc)
-                    newDoc
+                    firestore.collection("users").document(user.uid).set(defaultDoc)
                 }
-                _currentUserDoc.value = userDoc
-                _authState.value = AuthState.Authenticated(user, userDoc)
             }
-            .addOnFailureListener {
-                val fallback = createDefaultUserDoc(user)
-                _currentUserDoc.value = fallback
-                _authState.value = AuthState.Authenticated(user, fallback)
+            .addOnFailureListener { e ->
+                Log.w(TAG, "Non-fatal: could not sync Firestore user doc: ${e.message}")
             }
     }
 
@@ -396,12 +433,16 @@ class FirebaseAuthService(
         val firestore = firestoreProvider() ?: return defaultDoc
         return try {
             val userRef = firestore.collection("users").document(user.uid)
-            val snap = userRef.get().await()
-            if (snap.exists()) {
+            val snap = withTimeoutOrNull(4000L) {
+                userRef.get().await()
+            }
+            if (snap != null && snap.exists()) {
                 snap.toObject(UserDoc::class.java) ?: defaultDoc
             } else {
                 try {
-                    userRef.set(defaultDoc).await()
+                    withTimeoutOrNull(3000L) {
+                        userRef.set(defaultDoc).await()
+                    }
                 } catch (fe: Exception) {
                     Log.w(TAG, "Firestore create user doc warning: ${fe.message}")
                 }

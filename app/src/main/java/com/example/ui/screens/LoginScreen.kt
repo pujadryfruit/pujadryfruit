@@ -50,6 +50,7 @@ fun LoginScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val authState by viewModel.authState.collectAsStateWithLifecycle()
+    val isLoginLoading by viewModel.loginLoading.collectAsStateWithLifecycle()
     val shopProfile by viewModel.shopProfile.collectAsStateWithLifecycle()
     val isPinConfigured = shopProfile?.isPinSecurityEnabled == true && !shopProfile?.securityPin.isNullOrBlank()
 
@@ -64,7 +65,7 @@ fun LoginScreen(
     var forgotEmail by remember { mutableStateOf("") }
     var isSendingReset by remember { mutableStateOf(false) }
 
-    val isLoading = authState is AuthState.Loading
+    val isLoading = isLoginLoading || authState is AuthState.Loading
 
     fun validateInputs(): Boolean {
         var isValid = true

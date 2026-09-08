@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.firebase.*
@@ -15,7 +16,10 @@ import com.example.data.repository.*
 import com.example.util.DateFilterRange
 import com.example.util.DateRange
 import com.example.util.DateUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -101,18 +105,28 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val lastSyncTime: StateFlow<Long> = syncRepo.lastSyncTime
     val syncMessage: StateFlow<String> = syncRepo.syncMessage
 
+    private val _loginLoading = MutableStateFlow(false)
+    val loginLoading: StateFlow<Boolean> = _loginLoading.asStateFlow()
+
+    private var activeLoginJob: Job? = null
+
     init {
         FirebaseManager.initialize(application)
+        var lastAuthenticatedUserId: String? = null
         viewModelScope.launch {
             authState.collect { state ->
                 when (state) {
                     is FirebaseAuthService.AuthState.Authenticated -> {
                         val uid = state.user?.uid ?: state.userDoc.id
                         FirebaseManager.currentUserId = uid
-                        syncRepo.startRealtimeListeners()
-                        syncRepo.performFullCloudSync()
+                        if (lastAuthenticatedUserId != uid) {
+                            lastAuthenticatedUserId = uid
+                            syncRepo.startRealtimeListeners()
+                            syncRepo.performFullCloudSync()
+                        }
                     }
                     else -> {
+                        lastAuthenticatedUserId = null
                         syncRepo.stopRealtimeListeners()
                     }
                 }
@@ -122,6 +136,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        activeLoginJob?.cancel()
         syncRepo.stopRealtimeListeners()
     }
 
@@ -380,7 +395,11 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val activeInvoiceItems: StateFlow<List<SaleItemEntity>> = _activeInvoiceItems.asStateFlow()
 
     // Feedback Toast / Snackbar message
-    private val _uiEventMessage = MutableSharedFlow<String>()
+    private val _uiEventMessage = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val uiEventMessage = _uiEventMessage.asSharedFlow()
 
     init {
@@ -1041,67 +1060,120 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Firebase Cloud Sync & Authentication Operations ---
+    fun clearAuthError() {
+        authService.clearError()
+        _loginLoading.value = false
+    }
+
+    fun resetLoginState() {
+        activeLoginJob?.cancel()
+        activeLoginJob = null
+        authService.resetAuthState()
+        _loginLoading.value = false
+    }
+
     fun signInWithGoogle(context: android.content.Context) {
-        viewModelScope.launch {
-            _uiEventMessage.emit("Signing in with Google...")
-            val result = authService.signInWithGoogle(context)
-            if (result.isSuccess) {
-                val user = result.getOrNull()
-                _uiEventMessage.emit("Welcome, ${user?.displayName ?: "User"}!")
-                syncRepo.performFullCloudSync()
-            } else {
-                _uiEventMessage.emit("Google Sign-In: ${result.exceptionOrNull()?.localizedMessage ?: "Failed"}")
+        activeLoginJob?.cancel()
+        activeLoginJob = viewModelScope.launch {
+            _loginLoading.value = true
+            _uiEventMessage.tryEmit("Signing in with Google...")
+            try {
+                val result = authService.signInWithGoogle(context)
+                if (result.isSuccess) {
+                    val user = result.getOrNull()
+                    _uiEventMessage.tryEmit("Welcome, ${user?.displayName ?: "User"}!")
+                    syncRepo.performFullCloudSync()
+                } else {
+                    _uiEventMessage.tryEmit("Google Sign-In: ${result.exceptionOrNull()?.localizedMessage ?: "Failed"}")
+                }
+            } catch (e: CancellationException) {
+                Log.d("ShopViewModel", "Google Sign-In job cancelled")
+            } catch (e: Throwable) {
+                Log.e("ShopViewModel", "Google Sign-In error: ${e.message}", e)
+                _uiEventMessage.tryEmit("Google Sign-In error: ${e.localizedMessage ?: "Failed"}")
+            } finally {
+                _loginLoading.value = false
             }
         }
     }
 
-    fun clearAuthError() {
-        authService.clearError()
-    }
-
     fun signInWithEmail(email: String, pass: String) {
-        viewModelScope.launch {
-            _uiEventMessage.emit("Signing in...")
-            val result = authService.signInWithEmailPassword(email, pass)
-            if (result.isSuccess) {
-                val user = result.getOrNull()
-                _uiEventMessage.emit("Welcome, ${user?.displayName ?: user?.email}!")
-                syncRepo.performFullCloudSync()
-            } else {
-                _uiEventMessage.emit("Login failed: ${result.exceptionOrNull()?.localizedMessage}")
+        activeLoginJob?.cancel()
+        activeLoginJob = viewModelScope.launch {
+            _loginLoading.value = true
+            _uiEventMessage.tryEmit("Signing in...")
+            try {
+                val result = authService.signInWithEmailPassword(email, pass)
+                if (result.isSuccess) {
+                    val user = result.getOrNull()
+                    _uiEventMessage.tryEmit("Welcome, ${user?.displayName ?: user?.email}!")
+                    syncRepo.performFullCloudSync()
+                } else {
+                    val err = result.exceptionOrNull()?.localizedMessage ?: "Login failed"
+                    _uiEventMessage.tryEmit("Login failed: $err")
+                }
+            } catch (e: CancellationException) {
+                Log.d("ShopViewModel", "Login job cancelled by user retry")
+            } catch (e: Throwable) {
+                Log.e("ShopViewModel", "Unexpected login error: ${e.message}", e)
+                val err = e.localizedMessage ?: "Login failed. Please try again."
+                _uiEventMessage.tryEmit("Login error: $err")
+            } finally {
+                _loginLoading.value = false
             }
         }
     }
 
     fun signInWithPin(enteredPin: String) {
-        viewModelScope.launch {
-            val profile = shopProfile.value
-            if (profile == null || !profile.isPinSecurityEnabled || profile.securityPin.isBlank()) {
-                _uiEventMessage.emit("PIN access is not configured. Please log in with Email & Password first and enable PIN in Shop Settings.")
-                return@launch
-            }
-            _uiEventMessage.emit("Verifying Security PIN...")
-            val currentPin = profile.securityPin
-            val result = authService.signInWithPin(enteredPin, currentPin)
-            if (result.isSuccess) {
-                _isUnlocked.value = true
-                _uiEventMessage.emit("Security PIN verified! Welcome.")
-            } else {
-                _uiEventMessage.emit(result.exceptionOrNull()?.message ?: "Incorrect PIN")
+        activeLoginJob?.cancel()
+        activeLoginJob = viewModelScope.launch {
+            _loginLoading.value = true
+            try {
+                val profile = shopProfile.value
+                if (profile == null || !profile.isPinSecurityEnabled || profile.securityPin.isBlank()) {
+                    _uiEventMessage.tryEmit("PIN access is not configured. Please log in with Email & Password first and enable PIN in Shop Settings.")
+                    authService.clearError()
+                    return@launch
+                }
+                _uiEventMessage.tryEmit("Verifying Security PIN...")
+                val currentPin = profile.securityPin
+                val result = authService.signInWithPin(enteredPin, currentPin)
+                if (result.isSuccess) {
+                    _isUnlocked.value = true
+                    _uiEventMessage.tryEmit("Security PIN verified! Welcome.")
+                } else {
+                    _uiEventMessage.tryEmit(result.exceptionOrNull()?.message ?: "Incorrect PIN")
+                }
+            } catch (e: CancellationException) {
+                // Cancelled
+            } catch (e: Throwable) {
+                _uiEventMessage.tryEmit("PIN verification error: ${e.localizedMessage}")
+            } finally {
+                _loginLoading.value = false
             }
         }
     }
 
     fun loginWithDefaultOwner(pass: String = "Rohit@") {
-        viewModelScope.launch {
-            _uiEventMessage.emit("Signing in as Owner...")
-            val result = authService.signInWithEmailPassword("rohit21oc@gmail.com", pass)
-            if (result.isSuccess) {
-                _isUnlocked.value = true
-                _uiEventMessage.emit("Welcome Rohit Kumar (Owner)!")
-                syncRepo.performFullCloudSync()
-            } else {
-                _uiEventMessage.emit("Owner login failed: ${result.exceptionOrNull()?.localizedMessage}")
+        activeLoginJob?.cancel()
+        activeLoginJob = viewModelScope.launch {
+            _loginLoading.value = true
+            _uiEventMessage.tryEmit("Signing in as Owner...")
+            try {
+                val result = authService.signInWithEmailPassword("rohit21oc@gmail.com", pass)
+                if (result.isSuccess) {
+                    _isUnlocked.value = true
+                    _uiEventMessage.tryEmit("Welcome Rohit Kumar (Owner)!")
+                    syncRepo.performFullCloudSync()
+                } else {
+                    _uiEventMessage.tryEmit("Owner login failed: ${result.exceptionOrNull()?.localizedMessage}")
+                }
+            } catch (e: CancellationException) {
+                // Cancelled
+            } catch (e: Throwable) {
+                _uiEventMessage.tryEmit("Owner login error: ${e.localizedMessage}")
+            } finally {
+                _loginLoading.value = false
             }
         }
     }
@@ -1187,10 +1259,13 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOut(context: android.content.Context) {
+        activeLoginJob?.cancel()
+        activeLoginJob = null
+        _loginLoading.value = false
         viewModelScope.launch {
             syncRepo.stopRealtimeListeners()
             authService.signOut(context)
-            _uiEventMessage.emit("Signed out successfully")
+            _uiEventMessage.tryEmit("Signed out successfully")
         }
     }
 
