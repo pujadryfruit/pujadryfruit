@@ -55,6 +55,15 @@ interface SaleDao {
     @Query("SELECT * FROM sales WHERE invoiceNumber = :invoiceNumber LIMIT 1")
     suspend fun getSaleByInvoiceNumber(invoiceNumber: String): SaleEntity?
 
+    @Query("SELECT * FROM sales WHERE invoiceNumber = :invoiceNumber")
+    suspend fun getSalesByInvoiceNumber(invoiceNumber: String): List<SaleEntity>
+
+    @Query("DELETE FROM sales WHERE id = :saleId")
+    suspend fun deleteSaleById(saleId: Long)
+
+    @Query("DELETE FROM sale_items WHERE saleId = :saleId")
+    suspend fun deleteSaleItemsBySaleId(saleId: Long)
+
     @Query("SELECT * FROM sale_items WHERE saleId = :saleId")
     fun getSaleItems(saleId: Long): Flow<List<SaleItemEntity>>
 

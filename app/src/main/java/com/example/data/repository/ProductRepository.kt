@@ -69,6 +69,9 @@ class ProductRepository(
         )
     }
 
+    fun getStockAuditsByDateRange(startDate: Long, endDate: Long): Flow<List<StockAuditEntity>> =
+        stockAuditDao.getStockAuditsByDateRange(startDate, endDate)
+
     suspend fun deleteProduct(id: Long) {
         productDao.archiveProduct(id)
         productDao.deleteProductById(id)

@@ -43,12 +43,26 @@ class FirestoreTransactionManager(
             val saleRef = firestore.collection("sales").document(saleDocId)
             val now = System.currentTimeMillis()
 
+            val finalItems = saleItems.mapIndexed { index, item ->
+                val prodId = if (item.productId.startsWith("${shopId}_prod_")) item.productId else "${shopId}_prod_${item.productId}"
+                val itemDocId = "${saleDocId}_item_${item.productId.substringAfterLast("_prod_")}_$index"
+                item.copy(
+                    id = itemDocId,
+                    saleId = saleDocId,
+                    shopId = shopId,
+                    productId = prodId,
+                    createdAt = now,
+                    updatedAt = now
+                )
+            }
+
             val finalSaleDoc = saleDoc.copy(
                 id = saleDocId,
                 shopId = shopId,
                 createdByUserId = userId,
                 createdAt = if (saleDoc.createdAt > 0) saleDoc.createdAt else now,
-                updatedAt = now
+                updatedAt = now,
+                items = finalItems
             )
 
             val batch = firestore.batch()
@@ -57,18 +71,8 @@ class FirestoreTransactionManager(
             batch.set(saleRef, finalSaleDoc, SetOptions.merge())
 
             // 2. Write each SaleItem and StockTransaction deterministically
-            saleItems.forEachIndexed { index, item ->
-                val prodId = if (item.productId.startsWith("${shopId}_prod_")) item.productId else "${shopId}_prod_${item.productId}"
-                val itemDocId = "${saleDocId}_item_${item.productId.substringAfterLast("_prod_")}_$index"
-                val itemRef = firestore.collection("saleItems").document(itemDocId)
-                val finalItem = item.copy(
-                    id = itemDocId,
-                    saleId = saleDocId,
-                    shopId = shopId,
-                    productId = prodId,
-                    createdAt = now,
-                    updatedAt = now
-                )
+            finalItems.forEachIndexed { index, finalItem ->
+                val itemRef = firestore.collection("saleItems").document(finalItem.id)
                 batch.set(itemRef, finalItem, SetOptions.merge())
 
                 // Deterministic audit log for sale
@@ -77,14 +81,14 @@ class FirestoreTransactionManager(
                 val stockTx = StockTransactionDoc(
                     id = stockTxDocId,
                     shopId = shopId,
-                    productId = prodId,
-                    productName = item.productName,
+                    productId = finalItem.productId,
+                    productName = finalItem.productName,
                     transactionType = "SALE",
-                    quantityChange = -item.quantity,
+                    quantityChange = -finalItem.quantity,
                     previousStock = 0.0,
                     newStock = 0.0,
-                    unit = item.unit,
-                    unitPrice = item.sellingPrice,
+                    unit = finalItem.unit,
+                    unitPrice = finalItem.sellingPrice,
                     referenceId = finalSaleDoc.invoiceNumber,
                     referenceType = "SALE",
                     reason = "Counter Sale ${finalSaleDoc.invoiceNumber}",

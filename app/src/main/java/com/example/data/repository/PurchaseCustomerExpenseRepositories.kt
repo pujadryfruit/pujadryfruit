@@ -18,6 +18,9 @@ class PurchaseRepository(
     fun getPurchasesByDateRange(startDate: Long, endDate: Long): Flow<List<PurchaseEntity>> =
         purchaseDao.getPurchasesByDateRange(startDate, endDate)
 
+    fun getTotalPurchasesByDateRange(startDate: Long, endDate: Long): Flow<Double?> =
+        purchaseDao.getTotalPurchaseAmountByDateRange(startDate, endDate)
+
     fun getPurchaseItems(purchaseId: Long): Flow<List<PurchaseItemEntity>> =
         purchaseDao.getPurchaseItems(purchaseId)
 
@@ -232,6 +235,12 @@ class CustomerRepository(
 
     fun getPaymentsByCustomer(customerId: Long): Flow<List<CreditPaymentEntity>> =
         creditPaymentDao.getPaymentsByCustomer(customerId)
+
+    fun getCreditPaymentsByDateRange(startDate: Long, endDate: Long): Flow<List<CreditPaymentEntity>> =
+        creditPaymentDao.getCreditPaymentsByDateRange(startDate, endDate)
+
+    fun getTotalCreditCollectedByDateRange(startDate: Long, endDate: Long): Flow<Double?> =
+        creditPaymentDao.getTotalCreditCollectedByDateRange(startDate, endDate)
 
     suspend fun getPaymentsByCustomerSync(customerId: Long): List<CreditPaymentEntity> =
         creditPaymentDao.getPaymentsByCustomerSync(customerId)

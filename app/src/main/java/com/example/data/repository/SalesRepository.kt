@@ -75,8 +75,8 @@ class SalesRepository(
         sale: SaleEntity,
         items: List<SaleItemEntity>,
         customerAddress: String = ""
-    ): Long {
-        var createdSaleId: Long = 0
+    ): SaleEntity {
+        var finalResultSale: SaleEntity = sale
         database.withTransaction {
             // Ensure unique sequential invoice number in YYYYMMDD001 format
             val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.ENGLISH)
@@ -108,7 +108,8 @@ class SalesRepository(
             }
 
             val finalSale = sale.copy(invoiceNumber = finalInvoiceNumber, customerId = targetCustomerId)
-            createdSaleId = saleDao.insertSale(finalSale)
+            val createdSaleId = saleDao.insertSale(finalSale)
+            finalResultSale = finalSale.copy(id = createdSaleId)
 
             // 2. Insert items with sale ID
             val mappedItems = items.map { it.copy(saleId = createdSaleId) }
@@ -149,7 +150,14 @@ class SalesRepository(
             // 5. Increment invoice sequence in shop profile
             shopDao.incrementInvoiceNumber()
         }
-        return createdSaleId
+        return finalResultSale
+    }
+
+    suspend fun deleteSale(saleId: Long) {
+        database.withTransaction {
+            saleDao.deleteSaleItemsBySaleId(saleId)
+            saleDao.deleteSaleById(saleId)
+        }
     }
 
     /**

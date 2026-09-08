@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
@@ -32,6 +33,7 @@ class FirebaseSyncRepository(
 ) {
     private val TAG = "FirebaseSyncRepo"
     private val syncScope = CoroutineScope(Dispatchers.IO)
+    private val fullSyncMutex = Mutex()
 
     private val _syncState = MutableStateFlow(CloudSyncState.IDLE)
     val syncState: StateFlow<CloudSyncState> = _syncState.asStateFlow()
@@ -358,13 +360,19 @@ class FirebaseSyncRepository(
      * If documents were deleted in Firestore, they are deleted locally as well.
      */
     suspend fun performFullCloudSync(shopId: String = FirebaseManager.currentShopId): Result<String> = withContext(Dispatchers.IO) {
+        if (!fullSyncMutex.tryLock()) {
+            Log.d(TAG, "Full cloud sync already in progress, skipping concurrent trigger.")
+            return@withContext Result.success("Sync already in progress")
+        }
         val firestore = firestoreProvider() ?: run {
+            fullSyncMutex.unlock()
             _syncState.value = CloudSyncState.OFFLINE
             _syncMessage.value = "Local Mode - Offline Active"
             return@withContext Result.success("Local Mode Active")
         }
         val currentUser = FirebaseManager.auth?.currentUser
         if (currentUser == null) {
+            fullSyncMutex.unlock()
             _syncState.value = CloudSyncState.OFFLINE
             _syncMessage.value = "Local Storage Active (Sign in for Cloud Backup)"
             Log.d(TAG, "Cloud sync deferred: User not signed in to Firebase Auth. Using local Room database.")
@@ -706,19 +714,67 @@ class FirebaseSyncRepository(
 
             // 6. Push Local Sales and Pull Remote Sales
             try {
+                // A. Cleanup any existing local duplicates (e.g. phantom PDF-... rows created before login)
+                cleanupLocalSalesDuplicates()
+
                 val localSales = database.saleDao().getAllSalesSync()
                 val remoteSalesSnap = firestore.collection("sales")
                     .whereEqualTo("shopId", shopId)
                     .get()
                     .await()
 
-                val remoteInvoiceNumbers = remoteSalesSnap.documents.mapNotNull { it.getString("invoiceNumber") }.toSet()
+                // B. Prune remote phantom duplicates from Firestore
+                pruneRemoteSalesDuplicates(shopId, firestore, remoteSalesSnap)
+
+                // Re-evaluate remote sales documents after pruning
+                val remoteSalesDocs = remoteSalesSnap.documents.mapNotNull { doc ->
+                    doc.toObject(SaleDoc::class.java)?.copy(id = doc.id)
+                }
+
+                val datePattern = Regex("^\\d{8}\\d{3,}$")
+                val dateBasedRemote = remoteSalesDocs.filter { datePattern.matches(it.invoiceNumber) }
+
+                // Find phantom duplicate remote invoices that should be ignored
+                val phantomRemoteInvoices = mutableSetOf<String>()
+                for (doc in remoteSalesDocs) {
+                    if (!datePattern.matches(doc.invoiceNumber)) {
+                        val hasEquivalent = dateBasedRemote.any { dateDoc ->
+                            Math.abs(dateDoc.saleDate - doc.saleDate) <= 180_000L &&
+                            Math.abs(dateDoc.grandTotal - doc.grandTotal) < 0.01 &&
+                            (dateDoc.customerName.equals(doc.customerName, ignoreCase = true) ||
+                             (dateDoc.customerMobile.isNotBlank() && dateDoc.customerMobile == doc.customerMobile))
+                        }
+                        if (hasEquivalent) {
+                            phantomRemoteInvoices.add(doc.invoiceNumber)
+                        }
+                    }
+                }
+
+                val validRemoteDocs = remoteSalesDocs.filter { it.invoiceNumber !in phantomRemoteInvoices }
+                val remoteInvoiceNumbers = validRemoteDocs.map { it.invoiceNumber }.toSet()
                 
-                // Push any unsynced local sales to Firestore immediately
+                // Push any unsynced canonical local sales to Firestore immediately
                 val unsyncedLocalSales = localSales.filter { it.invoiceNumber !in remoteInvoiceNumbers }
                 for (unsynced in unsyncedLocalSales) {
                     val saleItems = database.saleDao().getSaleItemsSync(unsynced.id)
                     val saleDocId = "${shopId}_sale_${unsynced.invoiceNumber}"
+                    val saleItemDocs = saleItems.mapIndexed { idx, item ->
+                        val itemDocId = "${saleDocId}_item_${item.productId}_$idx"
+                        SaleItemDoc(
+                            id = itemDocId,
+                            saleId = saleDocId,
+                            shopId = shopId,
+                            productId = "${shopId}_prod_${item.productId}",
+                            productName = item.productName,
+                            unit = item.unit,
+                            quantity = item.quantity,
+                            sellingPrice = item.sellingPrice,
+                            costPrice = item.costPrice,
+                            discount = item.discount,
+                            totalAmount = item.totalAmount,
+                            itemProfit = item.itemProfit
+                        )
+                    }
                     val saleDoc = SaleDoc(
                         id = saleDocId,
                         shopId = shopId,
@@ -745,36 +801,29 @@ class FirebaseSyncRepository(
                         cancellationReason = unsynced.cancellationReason,
                         createdByUserId = FirebaseManager.currentUserId,
                         createdAt = unsynced.createdAt,
-                        updatedAt = System.currentTimeMillis()
+                        updatedAt = System.currentTimeMillis(),
+                        items = saleItemDocs
                     )
                     firestore.collection("sales").document(saleDocId).set(saleDoc, SetOptions.merge()).await()
 
-                    saleItems.forEachIndexed { idx, item ->
-                        val itemDocId = "${saleDocId}_item_${item.productId}_$idx"
-                        val itemDoc = SaleItemDoc(
-                            id = itemDocId,
-                            saleId = saleDocId,
-                            shopId = shopId,
-                            productId = "${shopId}_prod_${item.productId}",
-                            productName = item.productName,
-                            unit = item.unit,
-                            quantity = item.quantity,
-                            sellingPrice = item.sellingPrice,
-                            costPrice = item.costPrice,
-                            discount = item.discount,
-                            totalAmount = item.totalAmount,
-                            itemProfit = item.itemProfit
-                        )
-                        firestore.collection("saleItems").document(itemDocId).set(itemDoc, SetOptions.merge()).await()
+                    saleItemDocs.forEach { itemDoc ->
+                        firestore.collection("saleItems").document(itemDoc.id).set(itemDoc, SetOptions.merge()).await()
                     }
                 }
 
-                // Pull any remote sales not present locally
-                for (docSnap in remoteSalesSnap.documents) {
-                    val saleDoc = docSnap.toObject(SaleDoc::class.java)
-                    if (saleDoc != null && saleDoc.invoiceNumber.isNotBlank()) {
+                // Pull any valid remote sales not present locally
+                for (saleDoc in validRemoteDocs) {
+                    if (saleDoc.invoiceNumber.isNotBlank()) {
                         val existingSale = database.saleDao().getSaleByInvoiceNumber(saleDoc.invoiceNumber)
-                        if (existingSale == null) {
+                        val hasEquivalentLocal = localSales.any { local ->
+                            local.invoiceNumber == saleDoc.invoiceNumber || (
+                                Math.abs(local.saleDate - saleDoc.saleDate) <= 180_000L &&
+                                Math.abs(local.grandTotal - saleDoc.grandTotal) < 0.01 &&
+                                (local.customerName.equals(saleDoc.customerName, ignoreCase = true) ||
+                                 (local.customerMobile.isNotBlank() && local.customerMobile == saleDoc.customerMobile))
+                            )
+                        }
+                        if (existingSale == null && !hasEquivalentLocal) {
                             val parsedCustId = saleDoc.customerId?.substringAfterLast("_cust_", "")?.toLongOrNull()
                             val saleEntity = SaleEntity(
                                 invoiceNumber = saleDoc.invoiceNumber,
@@ -802,26 +851,44 @@ class FirebaseSyncRepository(
                             )
                             val insertedSaleId = database.saleDao().insertSale(saleEntity)
 
-                            // Fetch sale items
-                            val itemsSnap = firestore.collection("saleItems")
-                                .whereEqualTo("saleId", saleDoc.id)
-                                .get()
-                                .await()
+                            // Load items: prefer embedded saleDoc.items, fallback to collection query
+                            val itemEntities = if (saleDoc.items.isNotEmpty()) {
+                                saleDoc.items.map { itemDoc ->
+                                    val parsedProdId = itemDoc.productId.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                                    SaleItemEntity(
+                                        saleId = insertedSaleId,
+                                        productId = parsedProdId,
+                                        productName = itemDoc.productName,
+                                        unit = itemDoc.unit,
+                                        quantity = itemDoc.quantity,
+                                        sellingPrice = itemDoc.sellingPrice,
+                                        costPrice = itemDoc.costPrice,
+                                        discount = itemDoc.discount,
+                                        totalAmount = itemDoc.totalAmount,
+                                        itemProfit = itemDoc.itemProfit
+                                    )
+                                }
+                            } else {
+                                val itemsSnap = firestore.collection("saleItems")
+                                    .whereEqualTo("saleId", saleDoc.id)
+                                    .get()
+                                    .await()
 
-                            val itemEntities = itemsSnap.documents.mapNotNull { it.toObject(SaleItemDoc::class.java) }.map { itemDoc ->
-                                val parsedProdId = itemDoc.productId.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
-                                SaleItemEntity(
-                                    saleId = insertedSaleId,
-                                    productId = parsedProdId,
-                                    productName = itemDoc.productName,
-                                    unit = itemDoc.unit,
-                                    quantity = itemDoc.quantity,
-                                    sellingPrice = itemDoc.sellingPrice,
-                                    costPrice = itemDoc.costPrice,
-                                    discount = itemDoc.discount,
-                                    totalAmount = itemDoc.totalAmount,
-                                    itemProfit = itemDoc.itemProfit
-                                )
+                                itemsSnap.documents.mapNotNull { it.toObject(SaleItemDoc::class.java) }.map { itemDoc ->
+                                    val parsedProdId = itemDoc.productId.substringAfterLast("_prod_", "").toLongOrNull() ?: 0L
+                                    SaleItemEntity(
+                                        saleId = insertedSaleId,
+                                        productId = parsedProdId,
+                                        productName = itemDoc.productName,
+                                        unit = itemDoc.unit,
+                                        quantity = itemDoc.quantity,
+                                        sellingPrice = itemDoc.sellingPrice,
+                                        costPrice = itemDoc.costPrice,
+                                        discount = itemDoc.discount,
+                                        totalAmount = itemDoc.totalAmount,
+                                        itemProfit = itemDoc.itemProfit
+                                    )
+                                }
                             }
                             if (itemEntities.isNotEmpty()) {
                                 database.saleDao().insertSaleItems(itemEntities)
@@ -1005,6 +1072,10 @@ class FirebaseSyncRepository(
                 _syncState.value = CloudSyncState.ERROR
                 _syncMessage.value = "Sync Error: ${e.localizedMessage}"
                 Result.failure(e)
+            }
+        } finally {
+            if (fullSyncMutex.isLocked) {
+                fullSyncMutex.unlock()
             }
         }
     }
@@ -1319,7 +1390,26 @@ class FirebaseSyncRepository(
     ) = withContext(Dispatchers.IO) {
         val firestore = firestoreProvider() ?: return@withContext
         try {
+            val saleItemDocs = items.mapIndexed { idx, item ->
+                val itemDocId = "${shopId}_sale_${sale.invoiceNumber}_item_${item.productId}_$idx"
+                SaleItemDoc(
+                    id = itemDocId,
+                    saleId = "${shopId}_sale_${sale.invoiceNumber}",
+                    shopId = shopId,
+                    productId = "${shopId}_prod_${item.productId}",
+                    productName = item.productName,
+                    unit = item.unit,
+                    quantity = item.quantity,
+                    sellingPrice = item.sellingPrice,
+                    costPrice = item.costPrice,
+                    discount = item.discount,
+                    totalAmount = item.totalAmount,
+                    itemProfit = item.itemProfit
+                )
+            }
+
             val saleDoc = SaleDoc(
+                id = "${shopId}_sale_${sale.invoiceNumber}",
                 shopId = shopId,
                 invoiceNumber = sale.invoiceNumber,
                 customerId = sale.customerId?.let { "${shopId}_cust_$it" },
@@ -1341,23 +1431,9 @@ class FirebaseSyncRepository(
                 notes = sale.notes,
                 createdByUserId = FirebaseManager.currentUserId,
                 createdAt = sale.createdAt,
-                updatedAt = System.currentTimeMillis()
+                updatedAt = System.currentTimeMillis(),
+                items = saleItemDocs
             )
-
-            val saleItemDocs = items.map { item ->
-                SaleItemDoc(
-                    shopId = shopId,
-                    productId = "${shopId}_prod_${item.productId}",
-                    productName = item.productName,
-                    unit = item.unit,
-                    quantity = item.quantity,
-                    sellingPrice = item.sellingPrice,
-                    costPrice = item.costPrice,
-                    discount = item.discount,
-                    totalAmount = item.totalAmount,
-                    itemProfit = item.itemProfit
-                )
-            }
 
             transactionManager.executeSaleTransaction(
                 shopId = shopId,
@@ -1513,6 +1589,83 @@ class FirebaseSyncRepository(
             transactionManager.executeSaleCancelTransaction(shopId, saleId, invoiceNumber, reason)
         } catch (e: Exception) {
             Log.w(TAG, "Background Firestore sale cancel sync error: ${e.message}")
+        }
+    }
+
+    /**
+     * Cleans up local Room database to eliminate any phantom duplicate sales created by previous bugs.
+     * Preserves valid sales and their items.
+     */
+    private suspend fun cleanupLocalSalesDuplicates() {
+        val localSales = database.saleDao().getAllSalesSync()
+        if (localSales.isEmpty()) return
+
+        val datePattern = Regex("^\\d{8}\\d{3,}$")
+        val dateBasedSales = localSales.filter { datePattern.matches(it.invoiceNumber) }
+        val nonDateSales = localSales.filter { !datePattern.matches(it.invoiceNumber) }
+
+        val idsToDelete = mutableSetOf<Long>()
+
+        for (nonDateSale in nonDateSales) {
+            // Check if there is an equivalent date-based sale
+            val duplicate = dateBasedSales.firstOrNull { dateSale ->
+                Math.abs(dateSale.saleDate - nonDateSale.saleDate) <= 180_000L &&
+                Math.abs(dateSale.grandTotal - nonDateSale.grandTotal) < 0.01 &&
+                (dateSale.customerName.equals(nonDateSale.customerName, ignoreCase = true) ||
+                 (dateSale.customerMobile.isNotBlank() && dateSale.customerMobile == nonDateSale.customerMobile))
+            }
+            if (duplicate != null) {
+                idsToDelete.add(nonDateSale.id)
+                Log.i(TAG, "Cleaning up local phantom duplicate sale: id=${nonDateSale.id}, inv=${nonDateSale.invoiceNumber}")
+            }
+        }
+
+        // Also check if any duplicate sales share identical invoice numbers
+        val groupedByInvoice = localSales.filter { it.id !in idsToDelete }.groupBy { it.invoiceNumber }
+        for ((_, salesWithSameInvoice) in groupedByInvoice) {
+            if (salesWithSameInvoice.size > 1) {
+                // Keep the lowest ID (first inserted), delete subsequent duplicates
+                salesWithSameInvoice.drop(1).forEach { idsToDelete.add(it.id) }
+            }
+        }
+
+        for (id in idsToDelete) {
+            database.saleDao().deleteSaleItemsBySaleId(id)
+            database.saleDao().deleteSaleById(id)
+        }
+    }
+
+    /**
+     * Prunes remote duplicate sales from Firestore if phantom "PDF-..." copies were previously created.
+     */
+    private suspend fun pruneRemoteSalesDuplicates(
+        shopId: String,
+        firestore: FirebaseFirestore,
+        remoteSalesSnap: com.google.firebase.firestore.QuerySnapshot
+    ) {
+        try {
+            val datePattern = Regex("^\\d{8}\\d{3,}$")
+            val remoteDocs = remoteSalesSnap.documents.mapNotNull { doc ->
+                doc.toObject(SaleDoc::class.java)?.copy(id = doc.id)
+            }
+            val dateBasedRemote = remoteDocs.filter { datePattern.matches(it.invoiceNumber) }
+            val nonDateRemote = remoteDocs.filter { !datePattern.matches(it.invoiceNumber) }
+
+            for (nonDateSale in nonDateRemote) {
+                val duplicate = dateBasedRemote.firstOrNull { dateSale ->
+                    Math.abs(dateSale.saleDate - nonDateSale.saleDate) <= 180_000L &&
+                    Math.abs(dateSale.grandTotal - nonDateSale.grandTotal) < 0.01 &&
+                    (dateSale.customerName.equals(nonDateSale.customerName, ignoreCase = true) ||
+                     (dateSale.customerMobile.isNotBlank() && dateSale.customerMobile == nonDateSale.customerMobile))
+                }
+                if (duplicate != null) {
+                    firestore.collection("sales").document(nonDateSale.id).delete().await()
+                    firestore.collection("invoices").document("${shopId}_inv_${nonDateSale.invoiceNumber}").delete().await()
+                    Log.i(TAG, "Pruned remote phantom duplicate sale: docId=${nonDateSale.id}, inv=${nonDateSale.invoiceNumber}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Warning while pruning remote duplicates: ${e.message}")
         }
     }
 }

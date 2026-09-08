@@ -64,8 +64,6 @@ fun DashboardScreen(
     val recentSales by viewModel.recentSalesList.collectAsStateWithLifecycle()
     val lowStockProducts by viewModel.lowStockProducts.collectAsStateWithLifecycle()
 
-    var showCustomDateDialog by remember { mutableStateOf(false) }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -210,18 +208,66 @@ fun DashboardScreen(
                 }
             }
 
-            // 2. Date Filter Row
+            // 2. Date Filter Row & Active Range Indicator
             item {
-                DateFilterChips(
-                    selectedRange = dateFilter,
-                    onRangeSelected = { filter ->
-                        if (filter == DateFilterRange.CUSTOM) {
-                            showCustomDateDialog = true
-                        } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    DateFilterChips(
+                        selectedRange = dateFilter,
+                        activeDateRange = dateRange,
+                        onRangeSelected = { filter ->
                             viewModel.setDashboardDateFilter(filter)
+                        },
+                        onSelectMonthYear = { y, m -> viewModel.selectMonthYearFilter(y, m) },
+                        onSelectWeek = { s, e -> viewModel.selectWeekFilter(s, e) },
+                        onCustomRange = { s, e -> viewModel.setDashboardDateFilter(DateFilterRange.CUSTOM, Pair(s, e)) }
+                    )
+
+                    // Active Range Banner
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarToday,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Period: ${dateRange.displayLabel}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (dateFilter != DateFilterRange.TODAY) {
+                                Text(
+                                    text = "Reset to Today",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clickable { viewModel.setDashboardDateFilter(DateFilterRange.TODAY) }
+                                        .padding(4.dp)
+                                )
+                            }
                         }
                     }
-                )
+                }
             }
 
             // 3. Low Stock Warning Alert Banner (if any)
@@ -378,6 +424,37 @@ fun DashboardScreen(
                             iconBgColor = GeometricSecondary,
                             iconTintColor = Color.White,
                             modifier = Modifier.weight(1f).clickable { onNavigateToInventory() }
+                        )
+                    }
+
+                    // Row 4: Purchases in Period & Udhaar Collected
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        MetricCard(
+                            title = "Purchases",
+                            hindiTitle = "खरीद (माल)",
+                            value = CurrencyUtils.formatInr(metrics.totalPurchases),
+                            subtitle = "In ${dateRange.displayLabel}",
+                            icon = Icons.Default.LocalShipping,
+                            cardBgColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            iconBgColor = GeometricPrimary,
+                            iconTintColor = Color.White,
+                            modifier = Modifier.weight(1f)
+                        )
+                        MetricCard(
+                            title = "Udhaar Collected",
+                            hindiTitle = "उधार वसूली",
+                            value = CurrencyUtils.formatInr(metrics.totalCreditCollected),
+                            subtitle = "Given: ${CurrencyUtils.formatInr(metrics.totalCreditGiven)}",
+                            icon = Icons.Default.Payments,
+                            cardBgColor = CardProfitBg,
+                            contentColor = CardProfitText,
+                            iconBgColor = SuccessGreen,
+                            iconTintColor = Color.White,
+                            modifier = Modifier.weight(1f).clickable { onNavigateToUdhaar() }
                         )
                     }
                 }

@@ -41,9 +41,10 @@ fun ExpenseScreen(
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val expenses by viewModel.allExpenses.collectAsStateWithLifecycle()
+    val expenses by viewModel.expensesInDateRange.collectAsStateWithLifecycle()
     val categoryExpenses by viewModel.categoryExpenses.collectAsStateWithLifecycle()
     val dateFilter by viewModel.dashboardDateFilter.collectAsStateWithLifecycle()
+    val dateRange by viewModel.currentDashboardDateRange.collectAsStateWithLifecycle()
     val metrics by viewModel.dashboardMetrics.collectAsStateWithLifecycle()
 
     var showAddExpenseDialog by remember { mutableStateOf(false) }
@@ -71,7 +72,7 @@ fun ExpenseScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "दुकान खर्चे • ${dateFilter.label}: ${CurrencyUtils.formatInr(metrics.totalExpenses)}",
+                            text = "दुकान खर्चे • ${dateRange.displayLabel}: ${CurrencyUtils.formatInr(metrics.totalExpenses)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.outline
                         )
@@ -123,10 +124,62 @@ fun ExpenseScreen(
         ) {
             // Date Filter
             item {
-                DateFilterChips(
-                    selectedRange = dateFilter,
-                    onRangeSelected = { viewModel.setDashboardDateFilter(it) }
-                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    DateFilterChips(
+                        selectedRange = dateFilter,
+                        activeDateRange = dateRange,
+                        onRangeSelected = { viewModel.setDashboardDateFilter(it) },
+                        onSelectMonthYear = { y, m -> viewModel.selectMonthYearFilter(y, m) },
+                        onSelectWeek = { s, e -> viewModel.selectWeekFilter(s, e) },
+                        onCustomRange = { s, e -> viewModel.setDashboardDateFilter(DateFilterRange.CUSTOM, Pair(s, e)) }
+                    )
+
+                    // Active Range Banner
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarToday,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Period: ${dateRange.displayLabel}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (dateFilter != DateFilterRange.TODAY) {
+                                Text(
+                                    text = "Reset to Today",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clickable { viewModel.setDashboardDateFilter(DateFilterRange.TODAY) }
+                                        .padding(4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // Summary Card
@@ -146,7 +199,7 @@ fun ExpenseScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Total ${dateFilter.label} Expenses",
+                                text = "Total Expenses (${dateRange.displayLabel})",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = ErrorRed

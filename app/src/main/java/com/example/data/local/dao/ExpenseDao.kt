@@ -80,6 +80,12 @@ interface CreditPaymentDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAllPayments(payments: List<CreditPaymentEntity>)
 
+    @Query("SELECT * FROM credit_payments WHERE paymentDate BETWEEN :startDate AND :endDate ORDER BY paymentDate DESC")
+    fun getCreditPaymentsByDateRange(startDate: Long, endDate: Long): Flow<List<CreditPaymentEntity>>
+
+    @Query("SELECT SUM(amount) FROM credit_payments WHERE paymentDate BETWEEN :startDate AND :endDate")
+    fun getTotalCreditCollectedByDateRange(startDate: Long, endDate: Long): Flow<Double?>
+
     @Query("DELETE FROM credit_payments WHERE id = :id")
     suspend fun deletePaymentById(id: Long)
 
@@ -94,6 +100,9 @@ interface CreditPaymentDao {
 interface StockAuditDao {
     @Query("SELECT * FROM stock_audit ORDER BY timestamp DESC LIMIT :limit")
     fun getRecentStockAudits(limit: Int = 100): Flow<List<StockAuditEntity>>
+
+    @Query("SELECT * FROM stock_audit WHERE timestamp BETWEEN :startDate AND :endDate ORDER BY timestamp DESC")
+    fun getStockAuditsByDateRange(startDate: Long, endDate: Long): Flow<List<StockAuditEntity>>
 
     @Query("SELECT * FROM stock_audit WHERE productId = :productId ORDER BY timestamp DESC")
     fun getStockAuditsForProduct(productId: Long): Flow<List<StockAuditEntity>>

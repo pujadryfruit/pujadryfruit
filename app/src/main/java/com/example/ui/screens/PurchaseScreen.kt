@@ -30,11 +30,13 @@ import com.example.data.local.entities.ProductEntity
 import com.example.data.local.entities.PurchaseEntity
 import com.example.data.local.entities.SupplierEntity
 import com.example.ui.components.CustomSearchBar
+import com.example.ui.components.DateFilterChips
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.StatusBadge
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.ShopViewModel
 import com.example.util.CurrencyUtils
+import com.example.util.DateFilterRange
 import com.example.util.DateUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,14 +47,20 @@ fun PurchaseScreen(
     modifier: Modifier = Modifier
 ) {
     val purchases by viewModel.allPurchases.collectAsStateWithLifecycle()
+    val purchasesInDateRange by viewModel.purchasesInDateRange.collectAsStateWithLifecycle()
+    val dateFilter by viewModel.dashboardDateFilter.collectAsStateWithLifecycle()
+    val dateRange by viewModel.currentDashboardDateRange.collectAsStateWithLifecycle()
     val allProducts by viewModel.allActiveProducts.collectAsStateWithLifecycle()
     val allSuppliers by viewModel.allSuppliers.collectAsStateWithLifecycle()
 
     var showAddPurchaseSheet by remember { mutableStateOf(false) }
     var purchaseToEdit by remember { mutableStateOf<PurchaseEntity?>(null) }
     var searchQuery by remember { mutableStateOf("") }
+    var filterByDate by remember { mutableStateOf(false) }
 
-    val filteredPurchases = purchases.filter { p ->
+    val activePurchases = if (filterByDate) purchasesInDateRange else purchases
+
+    val filteredPurchases = activePurchases.filter { p ->
         searchQuery.isBlank() ||
                 p.supplierName.contains(searchQuery, ignoreCase = true) ||
                 p.invoiceReference.contains(searchQuery, ignoreCase = true)
@@ -141,6 +149,74 @@ fun PurchaseScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = !filterByDate,
+                        onClick = { filterByDate = false },
+                        label = { Text("All Purchases (${purchases.size})") }
+                    )
+                    FilterChip(
+                        selected = filterByDate,
+                        onClick = { filterByDate = true },
+                        label = { Text("By Period: ${dateRange.displayLabel}") }
+                    )
+                }
+            }
+
+            if (filterByDate) {
+                item {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        DateFilterChips(
+                            selectedRange = dateFilter,
+                            activeDateRange = dateRange,
+                            onRangeSelected = { viewModel.setDashboardDateFilter(it) },
+                            onSelectMonthYear = { y, m -> viewModel.selectMonthYearFilter(y, m) },
+                            onSelectWeek = { s, e -> viewModel.selectWeekFilter(s, e) },
+                            onCustomRange = { s, e -> viewModel.setDashboardDateFilter(DateFilterRange.CUSTOM, Pair(s, e)) }
+                        )
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Purchases in ${dateRange.displayLabel}: ${purchasesInDateRange.size} (${CurrencyUtils.formatInr(purchasesInDateRange.sumOf { it.totalAmount })})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (dateFilter != DateFilterRange.TODAY) {
+                                    Text(
+                                        text = "Reset to Today",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .clickable { viewModel.setDashboardDateFilter(DateFilterRange.TODAY) }
+                                            .padding(4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 CustomSearchBar(
                     query = searchQuery,

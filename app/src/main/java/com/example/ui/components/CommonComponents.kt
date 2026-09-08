@@ -25,9 +25,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.*
 import com.example.ui.theme.*
 import com.example.util.CurrencyUtils
 import com.example.util.DateFilterRange
+import com.example.util.DateRange
+import com.example.util.DateUtils
+import java.util.Calendar
 
 @Composable
 fun MetricCard(
@@ -130,12 +134,651 @@ fun MetricCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MonthYearPickerDialog(
+    initialYear: Int = Calendar.getInstance().get(Calendar.YEAR),
+    initialMonth: Int = Calendar.getInstance().get(Calendar.MONTH),
+    onDismiss: () -> Unit,
+    onConfirm: (year: Int, month: Int) -> Unit
+) {
+    var selectedYear by remember { mutableStateOf(initialYear) }
+    var selectedMonth by remember { mutableStateOf(initialMonth) }
+    var viewMode by remember { mutableStateOf(0) } // 0: Month Grid, 1: Timeline List
+    var showYearDropdown by remember { mutableStateOf(false) }
+
+    val monthNames = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    val fullMonthNames = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+    val maxDays = DateUtils.getMonthDaysCount(selectedYear, selectedMonth)
+    val isLeap = DateUtils.isLeapYear(selectedYear)
+    val shortMonthName = DateUtils.getShortMonthName(selectedMonth)
+    val fullMonthName = DateUtils.getFullMonthName(selectedMonth)
+    val endDayStr = String.format(java.util.Locale.ENGLISH, "%02d", maxDays)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Select Month",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    // View mode switcher: Grid vs Timeline
+                    Row(
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(2.dp)
+                    ) {
+                        Surface(
+                            onClick = { viewMode = 0 },
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (viewMode == 0) GeometricPrimary else Color.Transparent,
+                            contentColor = if (viewMode == 0) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        ) {
+                            Text(
+                                text = "Grid",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                        Surface(
+                            onClick = { viewMode = 1 },
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (viewMode == 1) GeometricPrimary else Color.Transparent,
+                            contentColor = if (viewMode == 1) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                        ) {
+                            Text(
+                                text = "Timeline",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Selected period preview banner
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text(
+                            text = "Period: $fullMonthName $selectedYear (01 $shortMonthName - $endDayStr $shortMonthName)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "$maxDays days in month${if (isLeap && selectedMonth == 1) " • Leap Year" else ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Year Navigator with steppers and dropdown menu
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { selectedYear -= 1 },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.ChevronLeft, contentDescription = "Previous Year")
+                    }
+
+                    Box {
+                        Surface(
+                            onClick = { showYearDropdown = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "$selectedYear",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Icon(
+                                    Icons.Default.ArrowDropDown,
+                                    contentDescription = "Select Year",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = showYearDropdown,
+                            onDismissRequest = { showYearDropdown = false }
+                        ) {
+                            val yearsList = (2020..2032).toList()
+                            yearsList.forEach { y ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "$y",
+                                            fontWeight = if (y == selectedYear) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (y == selectedYear) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    onClick = {
+                                        selectedYear = y
+                                        showYearDropdown = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { selectedYear += 1 },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.ChevronRight, contentDescription = "Next Year")
+                    }
+                }
+
+                // Quick horizontal Year Chips
+                val quickYears = listOf(selectedYear - 2, selectedYear - 1, selectedYear, selectedYear + 1, selectedYear + 2)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    quickYears.forEach { y ->
+                        FilterChip(
+                            selected = (y == selectedYear),
+                            onClick = { selectedYear = y },
+                            label = {
+                                Text(
+                                    text = "$y",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (y == selectedYear) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            modifier = Modifier.height(28.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                if (viewMode == 0) {
+                    // Mode 0: 4 rows x 3 columns month grid
+                    // Displays "Jan 2026", "Feb 2026", etc. with exact days and leap year calculation
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (row in 0..3) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                for (col in 0..2) {
+                                    val monthIdx = row * 3 + col
+                                    val isSelected = (monthIdx == selectedMonth)
+                                    val monthDays = DateUtils.getMonthDaysCount(selectedYear, monthIdx)
+                                    val isFebLeap = (monthIdx == 1 && isLeap)
+
+                                    Surface(
+                                        onClick = { selectedMonth = monthIdx },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) GeometricPrimary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                        contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                        border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.fillMaxSize(),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center
+                                        ) {
+                                            Text(
+                                                text = "${monthNames[monthIdx]} $selectedYear",
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                text = if (isFebLeap) "01-29 • Leap" else "01-${String.format(java.util.Locale.ENGLISH, "%02d", monthDays)}",
+                                                fontSize = 9.sp,
+                                                color = if (isSelected) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.outline
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Mode 1: Timeline showing months across years (e.g. Jan 2026, Feb 2026 ... Dec 2026, Jan 2027, Feb 2027)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                    ) {
+                        val timelineMonths = remember(selectedYear) {
+                            val list = mutableListOf<Pair<Int, Int>>()
+                            for (m in 10..11) list.add(Pair(selectedYear - 1, m))
+                            for (m in 0..11) list.add(Pair(selectedYear, m))
+                            for (m in 0..5) list.add(Pair(selectedYear + 1, m))
+                            list
+                        }
+
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(timelineMonths.size) { idx ->
+                                val (y, m) = timelineMonths[idx]
+                                val isSelected = (y == selectedYear && m == selectedMonth)
+                                val mDays = DateUtils.getMonthDaysCount(y, m)
+                                val mShort = monthNames[m]
+                                val isLeapM = (m == 1 && DateUtils.isLeapYear(y))
+
+                                Surface(
+                                    onClick = {
+                                        selectedYear = y
+                                        selectedMonth = m
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) GeometricPrimary.copy(alpha = 0.15f) else Color.Transparent,
+                                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, GeometricPrimary) else null,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                text = "$mShort $y",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (isSelected) GeometricPrimary else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "01 $mShort – ${String.format(java.util.Locale.ENGLISH, "%02d", mDays)} $mShort • $mDays days${if (isLeapM) " (Leap)" else ""}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.outline
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Icon(
+                                                Icons.Default.CheckCircle,
+                                                contentDescription = "Selected",
+                                                tint = GeometricPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(selectedYear, selectedMonth)
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = GeometricPrimary)
+            ) {
+                Text("Apply Month")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WeekPickerDialog(
+    initialStartMillis: Long? = null,
+    initialEndMillis: Long? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (startMillis: Long, endMillis: Long) -> Unit
+) {
+    var anchorMillis by remember {
+        mutableStateOf(initialStartMillis ?: System.currentTimeMillis())
+    }
+    val currentWeekRange = remember(anchorMillis) {
+        DateUtils.getWeekRangeForDate(anchorMillis)
+    }
+
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = anchorMillis
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val selected = datePickerState.selectedDateMillis
+                        if (selected != null) {
+                            anchorMillis = selected
+                        }
+                        showDatePicker = false
+                    }
+                ) {
+                    Text("Select")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) {
+                    Text("Cancel")
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(
+                    text = "Select Week",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = currentWeekRange.displayLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Stepper: ◀ Prev Week | Next Week ▶
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val cal = Calendar.getInstance().apply {
+                                timeInMillis = anchorMillis
+                                add(Calendar.DAY_OF_YEAR, -7)
+                            }
+                            anchorMillis = cal.timeInMillis
+                        }
+                    ) {
+                        Icon(Icons.Default.ChevronLeft, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Prev Week", fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val cal = Calendar.getInstance().apply {
+                                timeInMillis = anchorMillis
+                                add(Calendar.DAY_OF_YEAR, 7)
+                            }
+                            anchorMillis = cal.timeInMillis
+                        }
+                    ) {
+                        Text("Next Week", fontSize = 12.sp)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Text(
+                    text = "Quick Presets:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.outline
+                )
+
+                // Quick presets
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val now = System.currentTimeMillis()
+                    val presets = listOf(
+                        "This Week" to 0,
+                        "Last Week" to -7,
+                        "2 Weeks Ago" to -14,
+                        "3 Weeks Ago" to -21
+                    )
+                    presets.forEach { (label, dayOffset) ->
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = now
+                            add(Calendar.DAY_OF_YEAR, dayOffset)
+                        }
+                        val week = DateUtils.getWeekRangeForDate(cal.timeInMillis)
+                        val isCurrent = (week.startTimestamp == currentWeekRange.startTimestamp)
+                        OutlinedButton(
+                            onClick = { anchorMillis = cal.timeInMillis },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = if (isCurrent) ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                            ) else ButtonDefaults.outlinedButtonColors()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(label, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal)
+                                Text(week.displayLabel, fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                // Custom Date picker to jump to any date across any month/year
+                TextButton(
+                    onClick = { showDatePicker = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Pick Any Date to Select Its Week")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(currentWeekRange.startTimestamp, currentWeekRange.endTimestamp)
+                    onDismiss()
+                }
+            ) {
+                Text("Apply Week")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CustomDateRangeDialog(
+    initialStartMillis: Long? = null,
+    initialEndMillis: Long? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (startMillis: Long, endMillis: Long) -> Unit
+) {
+    val dateRangePickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initialStartMillis,
+        initialSelectedEndDateMillis = initialEndMillis
+    )
+
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val start = dateRangePickerState.selectedStartDateMillis
+                    val end = dateRangePickerState.selectedEndDateMillis ?: start
+                    if (start != null && end != null) {
+                        onConfirm(start, end)
+                    }
+                    onDismiss()
+                }
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    ) {
+        DateRangePicker(
+            state = dateRangePickerState,
+            title = {
+                Text(
+                    text = "Select Custom Date Range",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            headline = {
+                val start = dateRangePickerState.selectedStartDateMillis
+                val end = dateRangePickerState.selectedEndDateMillis
+                val text = if (start != null && end != null) {
+                    "${DateUtils.formatDayMonth(start)} – ${DateUtils.formatDayMonth(end)}"
+                } else if (start != null) {
+                    "From ${DateUtils.formatDayMonth(start)}"
+                } else {
+                    "Choose start & end dates"
+                }
+                Text(
+                    text = text,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        )
+    }
+}
+
 @Composable
 fun DateFilterChips(
     selectedRange: DateFilterRange,
+    activeDateRange: DateRange? = null,
     onRangeSelected: (DateFilterRange) -> Unit,
+    onSelectMonthYear: ((year: Int, month: Int) -> Unit)? = null,
+    onSelectWeek: ((start: Long, end: Long) -> Unit)? = null,
+    onCustomRange: ((start: Long, end: Long) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    var showMonthYearPicker by remember { mutableStateOf(false) }
+    var showWeekPicker by remember { mutableStateOf(false) }
+    var showCustomRangePicker by remember { mutableStateOf(false) }
+
+    if (showMonthYearPicker) {
+        val cal = Calendar.getInstance()
+        if (activeDateRange != null) {
+            cal.timeInMillis = activeDateRange.startTimestamp
+        }
+        MonthYearPickerDialog(
+            initialYear = cal.get(Calendar.YEAR),
+            initialMonth = cal.get(Calendar.MONTH),
+            onDismiss = { showMonthYearPicker = false },
+            onConfirm = { year, month ->
+                onSelectMonthYear?.invoke(year, month)
+                onRangeSelected(DateFilterRange.SELECT_MONTH_YEAR)
+            }
+        )
+    }
+
+    if (showWeekPicker) {
+        WeekPickerDialog(
+            initialStartMillis = activeDateRange?.startTimestamp,
+            initialEndMillis = activeDateRange?.endTimestamp,
+            onDismiss = { showWeekPicker = false },
+            onConfirm = { start, end ->
+                onSelectWeek?.invoke(start, end)
+                onRangeSelected(DateFilterRange.SELECT_WEEK)
+            }
+        )
+    }
+
+    if (showCustomRangePicker) {
+        CustomDateRangeDialog(
+            initialStartMillis = activeDateRange?.startTimestamp,
+            initialEndMillis = activeDateRange?.endTimestamp,
+            onDismiss = { showCustomRangePicker = false },
+            onConfirm = { start, end ->
+                onCustomRange?.invoke(start, end)
+                onRangeSelected(DateFilterRange.CUSTOM)
+            }
+        )
+    }
+
+    // Visible filter ranges: Today, Yesterday, Last 7 Days, Select Month, This Year, Custom
+    // "This Week" is removed, replaced by dynamic "Select Month" right after Last 7 Days
+    val visibleFilterRanges = listOf(
+        DateFilterRange.TODAY,
+        DateFilterRange.YESTERDAY,
+        DateFilterRange.LAST_7_DAYS,
+        DateFilterRange.SELECT_MONTH_YEAR,
+        DateFilterRange.THIS_YEAR,
+        DateFilterRange.CUSTOM
+    )
+
     val scrollState = rememberScrollState()
     Row(
         modifier = modifier
@@ -144,10 +787,42 @@ fun DateFilterChips(
             .padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        DateFilterRange.values().forEach { range ->
+        visibleFilterRanges.forEach { range ->
             val isSelected = range == selectedRange
+            val chipText = when (range) {
+                DateFilterRange.SELECT_MONTH_YEAR -> {
+                    if (isSelected && activeDateRange != null && activeDateRange.filterType == DateFilterRange.SELECT_MONTH_YEAR) {
+                        val cal = Calendar.getInstance().apply { timeInMillis = activeDateRange.startTimestamp }
+                        val monthLabel = DateUtils.getMonthYearShortLabel(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH))
+                        "📅 $monthLabel ▼"
+                    } else {
+                        "📅 Select Month ▼"
+                    }
+                }
+                DateFilterRange.CUSTOM -> {
+                    if (isSelected && activeDateRange != null && activeDateRange.filterType == DateFilterRange.CUSTOM) {
+                        "Custom: ${activeDateRange.displayLabel}"
+                    } else {
+                        range.label
+                    }
+                }
+                else -> range.label
+            }
+
             Surface(
-                onClick = { onRangeSelected(range) },
+                onClick = {
+                    when (range) {
+                        DateFilterRange.SELECT_MONTH_YEAR -> {
+                            showMonthYearPicker = true
+                        }
+                        DateFilterRange.CUSTOM -> {
+                            showCustomRangePicker = true
+                        }
+                        else -> {
+                            onRangeSelected(range)
+                        }
+                    }
+                },
                 shape = RoundedCornerShape(100.dp),
                 color = if (isSelected) GeometricPrimary else MaterialTheme.colorScheme.surface,
                 contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -158,11 +833,11 @@ fun DateFilterChips(
                     .testTag("filter_chip_${range.name.lowercase()}")
             ) {
                 Box(
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = range.label,
+                        text = chipText,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                         fontSize = 12.sp

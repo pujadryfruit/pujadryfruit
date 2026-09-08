@@ -23,7 +23,9 @@ data class FinancialStats(
     val sales: Double = 0.0,
     val grossProfit: Double = 0.0,
     val orders: Int = 0,
-    val expenses: Double = 0.0
+    val expenses: Double = 0.0,
+    val purchases: Double = 0.0,
+    val creditCollected: Double = 0.0
 )
 
 data class InventoryCustomerStats(
@@ -32,6 +34,15 @@ data class InventoryCustomerStats(
     val stockValue: Double = 0.0,
     val totalCustomers: Int = 0,
     val totalCredit: Double = 0.0
+)
+
+data class CustomerActivitySummary(
+    val customerId: Long,
+    val customerName: String,
+    val customerMobile: String,
+    val totalOrders: Int,
+    val totalSpent: Double,
+    val creditAdded: Double
 )
 
 data class DashboardMetrics(
@@ -46,7 +57,10 @@ data class DashboardMetrics(
     val totalProducts: Int = 0,
     val lowStockCount: Int = 0,
     val totalStockValue: Double = 0.0,
-    val totalOutstandingCredit: Double = 0.0
+    val totalOutstandingCredit: Double = 0.0,
+    val totalPurchases: Double = 0.0,
+    val totalCreditGiven: Double = 0.0,
+    val totalCreditCollected: Double = 0.0
 )
 
 data class CartItem(
@@ -123,12 +137,27 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val dashboardDateFilter: StateFlow<DateFilterRange> = _dashboardDateFilter.asStateFlow()
 
     private val _customDateRange = MutableStateFlow<Pair<Long, Long>?>(null)
+    private val _selectedMonthYear = MutableStateFlow<Pair<Int, Int>?>(null)
+    val selectedMonthYear: StateFlow<Pair<Int, Int>?> = _selectedMonthYear.asStateFlow()
+
+    private val _selectedWeekRange = MutableStateFlow<Pair<Long, Long>?>(null)
+    val selectedWeekRange: StateFlow<Pair<Long, Long>?> = _selectedWeekRange.asStateFlow()
 
     val currentDashboardDateRange: StateFlow<DateRange> = combine(
         _dashboardDateFilter,
-        _customDateRange
-    ) { filter, custom ->
-        DateUtils.getDateRange(filter, custom?.first, custom?.second)
+        _customDateRange,
+        _selectedMonthYear,
+        _selectedWeekRange
+    ) { filter, custom, monthYear, weekRange ->
+        DateUtils.resolveDateRange(
+            filter = filter,
+            customStart = custom?.first,
+            customEnd = custom?.second,
+            selectedYear = monthYear?.first,
+            selectedMonth = monthYear?.second,
+            weekStart = weekRange?.first,
+            weekEnd = weekRange?.second
+        )
     }.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
@@ -138,17 +167,27 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     // 3. Reactive Dashboard Metrics
     val dashboardMetrics: StateFlow<DashboardMetrics> = currentDashboardDateRange
         .flatMapLatest { dateRange ->
-            val financialFlow = combine(
+            val salesStatsFlow = combine(
                 salesRepo.getTotalSalesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp),
                 salesRepo.getTotalGrossProfitByDateRange(dateRange.startTimestamp, dateRange.endTimestamp),
-                salesRepo.getTotalOrdersCountByDateRange(dateRange.startTimestamp, dateRange.endTimestamp),
-                expenseRepo.getTotalExpensesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
-            ) { sales, grossProfit, orders, expenses ->
+                salesRepo.getTotalOrdersCountByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+            ) { sales, grossProfit, orders ->
+                Triple(sales ?: 0.0, grossProfit ?: 0.0, orders)
+            }
+
+            val financialFlow = combine(
+                salesStatsFlow,
+                expenseRepo.getTotalExpensesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp),
+                purchaseRepo.getTotalPurchasesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp),
+                customerRepo.getTotalCreditCollectedByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+            ) { (sales, grossProfit, orders), expenses, purchases, creditCollected ->
                 FinancialStats(
-                    sales = sales ?: 0.0,
-                    grossProfit = grossProfit ?: 0.0,
+                    sales = sales,
+                    grossProfit = grossProfit,
                     orders = orders,
-                    expenses = expenses ?: 0.0
+                    expenses = expenses ?: 0.0,
+                    purchases = purchases ?: 0.0,
+                    creditCollected = creditCollected ?: 0.0
                 )
             }
 
@@ -168,10 +207,14 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
 
-            combine(financialFlow, inventoryCustFlow) { fin, inv ->
+            val salesInRangeFlow = salesRepo.getSalesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+                .map { sales -> sales.distinctBy { it.invoiceNumber } }
+
+            combine(financialFlow, inventoryCustFlow, salesInRangeFlow) { fin, inv, salesList ->
                 val netProfit = fin.grossProfit - fin.expenses
                 val margin = if (fin.sales > 0) (fin.grossProfit / fin.sales * 100.0) else 0.0
                 val cost = fin.sales - fin.grossProfit
+                val creditGiven = salesList.filter { !it.isCancelled }.sumOf { it.balanceAmount }
 
                 DashboardMetrics(
                     totalSales = fin.sales,
@@ -185,7 +228,10 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                     totalProducts = inv.totalProducts,
                     lowStockCount = inv.lowStock,
                     totalStockValue = inv.stockValue,
-                    totalOutstandingCredit = inv.totalCredit
+                    totalOutstandingCredit = inv.totalCredit,
+                    totalPurchases = fin.purchases,
+                    totalCreditGiven = creditGiven,
+                    totalCreditCollected = fin.creditCollected
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardMetrics())
@@ -203,7 +249,64 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
     val recentSalesList: StateFlow<List<SaleEntity>> = currentDashboardDateRange
         .flatMapLatest { dateRange ->
             salesRepo.getSalesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.map { sales ->
+            // Defensive deduplication by invoiceNumber to guarantee UI displays each sale once
+            sales.distinctBy { it.invoiceNumber }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val customerActivityInDateRange: StateFlow<List<CustomerActivitySummary>> = recentSalesList
+        .map { sales ->
+            sales.filter { !it.isCancelled && it.customerId != null && it.customerId > 0 }
+                .groupBy { it.customerId!! }
+                .map { (customerId, custSales) ->
+                    val first = custSales.first()
+                    CustomerActivitySummary(
+                        customerId = customerId,
+                        customerName = first.customerName.ifBlank { "Customer #$customerId" },
+                        customerMobile = first.customerMobile,
+                        totalOrders = custSales.size,
+                        totalSpent = custSales.sumOf { it.grandTotal },
+                        creditAdded = custSales.sumOf { it.balanceAmount }
+                    )
+                }.sortedByDescending { it.totalSpent }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val totalCreditGivenInDateRange: StateFlow<Double> = recentSalesList
+        .map { sales ->
+            sales.filter { !it.isCancelled }.sumOf { it.balanceAmount }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+
+    val purchasesInDateRange: StateFlow<List<PurchaseEntity>> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            purchaseRepo.getPurchasesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val totalPurchasesInDateRange: StateFlow<Double> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            purchaseRepo.getTotalPurchasesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.map { it ?: 0.0 }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+
+    val expensesInDateRange: StateFlow<List<ExpenseEntity>> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            expenseRepo.getExpensesByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val stockAuditsInDateRange: StateFlow<List<StockAuditEntity>> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            productRepo.getStockAuditsByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val creditPaymentsInDateRange: StateFlow<List<CreditPaymentEntity>> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            customerRepo.getCreditPaymentsByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val totalCreditCollectedInDateRange: StateFlow<Double> = currentDashboardDateRange
+        .flatMapLatest { dateRange ->
+            customerRepo.getTotalCreditCollectedByDateRange(dateRange.startTimestamp, dateRange.endTimestamp)
+        }.map { it ?: 0.0 }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     // 4. Products & Inventory
     val allActiveProducts: StateFlow<List<ProductEntity>> = productRepo.allActiveProducts
@@ -307,11 +410,32 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         _isUnlocked.value = false
     }
 
-    fun setDashboardDateFilter(filter: DateFilterRange, customRange: Pair<Long, Long>? = null) {
+    fun setDashboardDateFilter(
+        filter: DateFilterRange,
+        customRange: Pair<Long, Long>? = null,
+        monthYear: Pair<Int, Int>? = null,
+        weekRange: Pair<Long, Long>? = null
+    ) {
         _dashboardDateFilter.value = filter
         if (customRange != null) {
             _customDateRange.value = customRange
         }
+        if (monthYear != null) {
+            _selectedMonthYear.value = monthYear
+        }
+        if (weekRange != null) {
+            _selectedWeekRange.value = weekRange
+        }
+    }
+
+    fun selectMonthYearFilter(year: Int, month: Int) {
+        _selectedMonthYear.value = Pair(year, month)
+        _dashboardDateFilter.value = DateFilterRange.SELECT_MONTH_YEAR
+    }
+
+    fun selectWeekFilter(startMillis: Long, endMillis: Long) {
+        _selectedWeekRange.value = Pair(startMillis, endMillis)
+        _dashboardDateFilter.value = DateFilterRange.SELECT_WEEK
     }
 
     // --- POS Cart Operations ---
@@ -394,9 +518,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         if (items.isEmpty()) return
 
         val profile = shopProfile.value ?: ShopProfile()
-        val nextSeq = profile.nextInvoiceNumber
-        val prefix = if (profile.invoicePrefix.isNotBlank()) profile.invoicePrefix else "PDF"
-        val invoiceNo = "$prefix-$nextSeq"
+        val saleTimestamp = System.currentTimeMillis()
 
         val subtotal = items.sumOf { it.itemSubtotal }
         val discount = _overallDiscount.value
@@ -428,27 +550,6 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             else -> "Walk-in Customer"
         }
 
-        val saleEntity = SaleEntity(
-            invoiceNumber = invoiceNo,
-            customerId = _selectedCustomer.value?.id,
-            customerName = custName,
-            customerMobile = _customerMobileInput.value.trim(),
-            saleDate = System.currentTimeMillis(),
-            subtotal = subtotal,
-            discount = discount,
-            taxAmount = taxAmount,
-            grandTotal = grandTotal,
-            totalCost = totalCost,
-            grossProfit = grossProfit,
-            profitMarginPercent = margin,
-            paymentMethod = method,
-            paymentStatus = paymentStatus,
-            paidAmount = finalPaid,
-            balanceAmount = balance,
-            dueDate = _dueDateMillis.value,
-            notes = _saleNotes.value.trim()
-        )
-
         val saleItems = items.map {
             SaleItemEntity(
                 saleId = 0, // Assigned in repo
@@ -465,14 +566,41 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val saleId = salesRepo.createSale(saleEntity, saleItems, _customerAddressInput.value)
-            loadActiveInvoice(saleId)
+            // Generate canonical date-based invoice number YYYYMMDD001 as single source of truth
+            val invoiceNo = salesRepo.generateNextInvoiceNumber(saleTimestamp)
+
+            val saleEntity = SaleEntity(
+                invoiceNumber = invoiceNo,
+                customerId = _selectedCustomer.value?.id,
+                customerName = custName,
+                customerMobile = _customerMobileInput.value.trim(),
+                saleDate = saleTimestamp,
+                subtotal = subtotal,
+                discount = discount,
+                taxAmount = taxAmount,
+                grandTotal = grandTotal,
+                totalCost = totalCost,
+                grossProfit = grossProfit,
+                profitMarginPercent = margin,
+                paymentMethod = method,
+                paymentStatus = paymentStatus,
+                paidAmount = finalPaid,
+                balanceAmount = balance,
+                dueDate = _dueDateMillis.value,
+                notes = _saleNotes.value.trim()
+            )
+
+            val createdSale = salesRepo.createSale(saleEntity, saleItems, _customerAddressInput.value)
+            val finalSaleId = createdSale.id
+            val finalInvoiceNo = createdSale.invoiceNumber
+
+            loadActiveInvoice(finalSaleId)
             clearCart()
-            _uiEventMessage.emit("Invoice $invoiceNo generated successfully!")
+            _uiEventMessage.emit("Invoice $finalInvoiceNo generated successfully!")
             
-            // Sync atomically to Firebase Firestore in background
+            // Sync atomically to Firebase Firestore in background with matching invoice number
             launch {
-                syncRepo.syncSaleToCloud(saleEntity.copy(id = saleId), saleItems)
+                syncRepo.syncSaleToCloud(createdSale, saleItems)
                 // Sync updated products to ensure exact stock consistency
                 for (item in saleItems) {
                     val updatedProd = productRepo.getProductById(item.productId)
@@ -482,7 +610,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            onSuccess(saleId, invoiceNo)
+            onSuccess(finalSaleId, finalInvoiceNo)
         }
     }
 
@@ -1060,6 +1188,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
 
     fun signOut(context: android.content.Context) {
         viewModelScope.launch {
+            syncRepo.stopRealtimeListeners()
             authService.signOut(context)
             _uiEventMessage.emit("Signed out successfully")
         }
