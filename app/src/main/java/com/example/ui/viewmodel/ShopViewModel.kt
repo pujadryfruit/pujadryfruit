@@ -870,6 +870,7 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
             val totalAmount = purchaseItems.sumOf { it.totalAmount }
             val updatedPurchase = PurchaseEntity(
                 id = purchaseId,
+                purchaseDate = oldPurchase?.purchaseDate ?: System.currentTimeMillis(),
                 supplierName = supplierName.trim(),
                 supplierPhone = supplierPhone.trim(),
                 invoiceReference = invoiceRef.trim(),
@@ -877,17 +878,47 @@ class ShopViewModel(application: Application) : AndroidViewModel(application) {
                 paymentStatus = paymentStatus,
                 paymentMethod = paymentMethod,
                 notes = notes.trim(),
-                purchaseDate = System.currentTimeMillis()
+                createdAt = oldPurchase?.createdAt ?: System.currentTimeMillis()
             )
             purchaseRepo.updatePurchase(purchaseId, updatedPurchase, purchaseItems)
-            _uiEventMessage.emit("Stock inward #${purchaseId} updated successfully!")
+            val statusText = if (paymentStatus.equals("PAID", true)) "PAID" else "UNPAID"
+            _uiEventMessage.emit("Stock inward #${purchaseId} updated ($statusText)!")
             launch {
                 syncRepo.syncPurchaseUpdateToCloud(updatedPurchase, purchaseItems, oldItems)
+                val supp = supplierRepo.getSupplierByName(updatedPurchase.supplierName)
+                if (supp != null) {
+                    syncRepo.syncSupplierToCloud(supp)
+                }
                 for (item in purchaseItems) {
                     val updatedProd = productRepo.getProductById(item.productId)
                     if (updatedProd != null) {
                         syncRepo.syncProductToCloud(updatedProd)
                     }
+                }
+            }
+            onComplete?.invoke(true)
+        }
+    }
+
+    fun markPurchaseAsPaid(
+        purchaseId: Long,
+        paymentMethod: String = "Cash",
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val oldPurchase = purchaseRepo.getPurchaseById(purchaseId) ?: return@launch
+            val items = purchaseRepo.getPurchaseItemsSync(purchaseId)
+            val updatedPurchase = oldPurchase.copy(
+                paymentStatus = "PAID",
+                paymentMethod = paymentMethod
+            )
+            purchaseRepo.updatePurchase(purchaseId, updatedPurchase, items)
+            _uiEventMessage.emit("Purchase #${purchaseId} marked as PAID via $paymentMethod!")
+            launch {
+                syncRepo.syncPurchaseUpdateToCloud(updatedPurchase, items, items)
+                val supp = supplierRepo.getSupplierByName(updatedPurchase.supplierName)
+                if (supp != null) {
+                    syncRepo.syncSupplierToCloud(supp)
                 }
             }
             onComplete?.invoke(true)

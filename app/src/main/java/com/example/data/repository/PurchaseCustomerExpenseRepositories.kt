@@ -27,6 +27,9 @@ class PurchaseRepository(
     suspend fun getPurchaseItemsSync(purchaseId: Long): List<PurchaseItemEntity> =
         purchaseDao.getPurchaseItemsSync(purchaseId)
 
+    suspend fun getPurchaseById(purchaseId: Long): PurchaseEntity? =
+        purchaseDao.getPurchaseById(purchaseId)
+
     suspend fun createPurchase(
         purchase: PurchaseEntity,
         items: List<PurchaseItemEntity>
@@ -37,16 +40,19 @@ class PurchaseRepository(
             val mappedItems = items.map { it.copy(purchaseId = createdPurchaseId) }
             purchaseDao.insertPurchaseItems(mappedItems)
 
-            // Update Supplier record
+            // Update Supplier record and outstanding balance for Udhaar
             if (purchase.supplierName.isNotBlank()) {
+                val isUnpaid = purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true)
+                val balanceDelta = if (isUnpaid) purchase.totalAmount else 0.0
                 val existingSupp = supplierDao.getSupplierByName(purchase.supplierName.trim())
                 if (existingSupp != null) {
-                    supplierDao.recordPurchase(existingSupp.id, purchase.totalAmount)
+                    supplierDao.recordPurchaseWithBalance(existingSupp.id, purchase.totalAmount, balanceDelta)
                 } else {
                     val newSupp = SupplierEntity(
                         name = purchase.supplierName.trim(),
                         mobile = purchase.supplierPhone.trim(),
                         totalPurchases = purchase.totalAmount,
+                        outstandingBalance = balanceDelta,
                         notes = "Auto-created from stock inward"
                     )
                     supplierDao.insertSupplier(newSupp)
@@ -78,6 +84,7 @@ class PurchaseRepository(
 
     /**
      * Updates an existing Purchase record and adjusts product stock accurately without double-counting.
+     * Also updates supplier ledger / outstanding balance if paymentStatus changed between UNPAID/PAID.
      */
     suspend fun updatePurchase(
         purchaseId: Long,
@@ -85,7 +92,25 @@ class PurchaseRepository(
         newItems: List<PurchaseItemEntity>
     ) {
         database.withTransaction {
+            val oldPurchase = purchaseDao.getPurchaseById(purchaseId)
             val oldItems = purchaseDao.getPurchaseItemsSync(purchaseId)
+
+            // Update supplier balance if udhaar changed
+            val oldWasUnpaid = oldPurchase?.paymentStatus?.equals("UNPAID", true) == true || oldPurchase?.paymentMethod?.contains("Credit", true) == true
+            val oldDue = if (oldWasUnpaid) (oldPurchase?.totalAmount ?: 0.0) else 0.0
+
+            val newIsUnpaid = updatedPurchase.paymentStatus.equals("UNPAID", true) || updatedPurchase.paymentMethod.contains("Credit", true)
+            val newDue = if (newIsUnpaid) updatedPurchase.totalAmount else 0.0
+
+            val balanceDelta = newDue - oldDue
+            val purchaseTotalDelta = updatedPurchase.totalAmount - (oldPurchase?.totalAmount ?: 0.0)
+
+            if (updatedPurchase.supplierName.isNotBlank()) {
+                val existingSupp = supplierDao.getSupplierByName(updatedPurchase.supplierName.trim())
+                if (existingSupp != null) {
+                    supplierDao.recordPurchaseWithBalance(existingSupp.id, purchaseTotalDelta, balanceDelta)
+                }
+            }
 
             // 1. Revert previous stock increments
             for (oldItem in oldItems) {
@@ -145,6 +170,15 @@ class PurchaseRepository(
             val items = purchaseDao.getPurchaseItemsSync(purchaseId)
             val purchase = purchaseDao.getPurchaseById(purchaseId)
 
+            if (purchase != null && purchase.supplierName.isNotBlank()) {
+                val isUnpaid = purchase.paymentStatus.equals("UNPAID", true) || purchase.paymentMethod.contains("Credit", true)
+                val balanceDelta = if (isUnpaid) -purchase.totalAmount else 0.0
+                val existingSupp = supplierDao.getSupplierByName(purchase.supplierName.trim())
+                if (existingSupp != null) {
+                    supplierDao.recordPurchaseWithBalance(existingSupp.id, -purchase.totalAmount, balanceDelta)
+                }
+            }
+
             for (item in items) {
                 val product = productDao.getProductById(item.productId)
                 val currentStock = product?.currentStock ?: 0.0
@@ -202,6 +236,9 @@ class SupplierRepository(
     }
 
     suspend fun updateSupplier(supplier: SupplierEntity) = supplierDao.updateSupplier(supplier)
+
+    suspend fun updateSupplierBalance(supplierId: Long, balanceDelta: Double) =
+        supplierDao.updateOutstandingBalance(supplierId, balanceDelta)
 
     suspend fun deleteSupplier(id: Long) = supplierDao.deleteSupplierById(id)
 }

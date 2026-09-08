@@ -1456,6 +1456,7 @@ class FirebaseSyncRepository(
     ) = withContext(Dispatchers.IO) {
         if (FirebaseManager.auth?.currentUser == null) return@withContext
         try {
+            val isPaid = purchase.paymentStatus.equals("PAID", true)
             val purchaseDoc = PurchaseDoc(
                 id = "${shopId}_pur_${purchase.id}",
                 shopId = shopId,
@@ -1467,7 +1468,8 @@ class FirebaseSyncRepository(
                 totalAmount = purchase.totalAmount,
                 paymentStatus = purchase.paymentStatus,
                 paymentMethod = purchase.paymentMethod,
-                paidAmount = purchase.totalAmount,
+                paidAmount = if (isPaid) purchase.totalAmount else 0.0,
+                balanceAmount = if (isPaid) 0.0 else purchase.totalAmount,
                 notes = purchase.notes,
                 createdByUserId = FirebaseManager.currentUserId
             )
@@ -1506,6 +1508,7 @@ class FirebaseSyncRepository(
     ) = withContext(Dispatchers.IO) {
         if (FirebaseManager.auth?.currentUser == null) return@withContext
         try {
+            val isPaid = purchase.paymentStatus.equals("PAID", true)
             val purchaseDoc = PurchaseDoc(
                 id = "${shopId}_pur_${purchase.id}",
                 shopId = shopId,
@@ -1517,7 +1520,8 @@ class FirebaseSyncRepository(
                 totalAmount = purchase.totalAmount,
                 paymentStatus = purchase.paymentStatus,
                 paymentMethod = purchase.paymentMethod,
-                paidAmount = purchase.totalAmount,
+                paidAmount = if (isPaid) purchase.totalAmount else 0.0,
+                balanceAmount = if (isPaid) 0.0 else purchase.totalAmount,
                 notes = purchase.notes,
                 createdByUserId = FirebaseManager.currentUserId
             )

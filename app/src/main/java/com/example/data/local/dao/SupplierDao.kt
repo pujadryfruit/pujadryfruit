@@ -47,4 +47,10 @@ interface SupplierDao {
 
     @Query("UPDATE suppliers SET totalPurchases = totalPurchases + :amount, updatedAt = :timestamp WHERE id = :id")
     suspend fun recordPurchase(id: Long, amount: Double, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE suppliers SET totalPurchases = totalPurchases + :amount, outstandingBalance = MAX(0.0, outstandingBalance + :balanceDelta), updatedAt = :timestamp WHERE id = :id")
+    suspend fun recordPurchaseWithBalance(id: Long, amount: Double, balanceDelta: Double, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE suppliers SET outstandingBalance = MAX(0.0, outstandingBalance + :balanceDelta), updatedAt = :timestamp WHERE id = :id")
+    suspend fun updateOutstandingBalance(id: Long, balanceDelta: Double, timestamp: Long = System.currentTimeMillis())
 }

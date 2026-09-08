@@ -398,6 +398,24 @@ class FirestoreTransactionManager(
                 ))
             }
 
+            // Update Supplier balance if supplierId is present
+            if (!supplierId.isNullOrEmpty()) {
+                val suppRef = firestore.collection("suppliers").document(supplierId)
+                val suppSnap = suppRef.get().await()
+                if (suppSnap.exists()) {
+                    val currentBal = suppSnap.getDouble("outstandingBalance") ?: 0.0
+                    val newBal = if (purchaseDoc.paymentStatus.equals("PAID", true)) {
+                        (currentBal - purchaseDoc.totalAmount).coerceAtLeast(0.0)
+                    } else {
+                        currentBal
+                    }
+                    batch.update(suppRef, mapOf(
+                        "outstandingBalance" to newBal,
+                        "updatedAt" to now
+                    ))
+                }
+            }
+
             batch.commit().await()
             Log.d(TAG, "Purchase $purchaseDocId updated in Firestore successfully")
             Result.success(purchaseDocId)
